@@ -65,31 +65,41 @@ def extraer_ids(boxes):
             ids_esta_frame.add(int(id_tensor.item()))
     return ids_esta_frame
 
-def actualizar_rastreo(primer_id, rastreo_id, ids_esta_frame):
+def actualizar_rastreo(primer_id, rastreo_id, ids_esta_frame, frames_perdidos, frames_espera=10):
     """
-    Gestiona la lógica de asignación o cambio de ID a rastrear.
+    Gestiona la lógica de asignación o cambio de ID a rastrear, esperando varios frames antes de cambiar.
 
     Parámetros:
         primer_id (int or None): Primer ID detectado.
         rastreo_id (int or None): ID actualmente rastreado.
         ids_esta_frame (set): IDs presentes en el frame actual.
+        frames_perdidos (int): Número de frames consecutivos sin detectar el ID actual.
+        frames_espera (int): Frames a esperar antes de cambiar de objetivo.
 
     Retorna:
         primer_id (int): ID inicial (si ya fue detectado).
         rastreo_id (int): ID actualmente rastreado (puede cambiar).
         reiniciar_coords (bool): Indica si se deben reiniciar coordenadas.
+        frames_perdidos (int): Contador actualizado de frames perdidos.
     """
     if primer_id is None and ids_esta_frame:
         primer_id = rastreo_id = next(iter(ids_esta_frame))
         print(f"Primera persona detectada: ID {primer_id}")
-    elif rastreo_id is not None and rastreo_id not in ids_esta_frame:
-        print(f"ID {rastreo_id} ya no está en escena")
-        if ids_esta_frame:
-            nuevo_id = max(ids_esta_frame)
-            print(f"Ahora rastreando a la última persona: ID {nuevo_id}")
-            rastreo_id = nuevo_id
-            return primer_id, rastreo_id, True
-    return primer_id, rastreo_id, False
+        frames_perdidos = 0
+    elif rastreo_id is not None:
+        if rastreo_id not in ids_esta_frame:
+            frames_perdidos += 1
+            if frames_perdidos >= frames_espera:
+                print(f"ID {rastreo_id} ausente durante {frames_perdidos} frames. Buscando nuevo objetivo...")
+                if ids_esta_frame:
+                    nuevo_id = max(ids_esta_frame)
+                    print(f"Ahora rastreando a la última persona: ID {nuevo_id}")
+                    rastreo_id = nuevo_id
+                    frames_perdidos = 0
+                    return primer_id, rastreo_id, True, frames_perdidos
+        else:
+            frames_perdidos = 0  # ID rastreado aún visible
+    return primer_id, rastreo_id, False, frames_perdidos
 
 def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales):
     """
@@ -150,6 +160,7 @@ def main():
     rastreo_id = None
     ids_globales = set()
     ultima_coords = None
+    frames_perdidos = 0
 
     while True:
         ret, frame = cap.read()
@@ -160,7 +171,7 @@ def main():
         boxes = result.boxes
         ids_esta_frame = extraer_ids(boxes)
 
-        primer_id, rastreo_id, reiniciar_coords = actualizar_rastreo(primer_id, rastreo_id, ids_esta_frame)
+        primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(primer_id, rastreo_id, ids_esta_frame, frames_perdidos)
         if reiniciar_coords:
             ultima_coords = None
 
