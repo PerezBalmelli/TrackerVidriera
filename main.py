@@ -1,5 +1,6 @@
 from ultralytics import YOLO
 import cv2
+import time
 
 def inicializar_modelo(ruta_modelo='yolov8n.pt'):
     """
@@ -45,7 +46,7 @@ def detectar_personas(modelo, frame):
     Retorna:
         results[0] (ultralytics.engine.results.Results): Resultados de la detección y tracking.
     """
-    resultados = modelo.track(frame, persist=True, conf=0.6, classes=[0])  # Solo clase 0: persona
+    resultados = modelo.track(frame, imgsz=320, persist=True, conf=0.6, classes=[0])  # Solo clase 0: persona
     return resultados[0]
 
 def extraer_ids(boxes):
@@ -152,35 +153,71 @@ def main():
     Carga el modelo, procesa el video cuadro por cuadro, rastrea a una persona
     y dibuja información en pantalla, guardando el resultado en un nuevo archivo.
     """
-    video_path = './test4.mp4'
+    # Abrimos la webcam
+    cap = cv2.VideoCapture(1)
     model = inicializar_modelo()
-    cap, out, _, _, _ = abrir_video(video_path)
+
+    if not cap.isOpened():
+        print("No se encontró cámara. Usando video de respaldo.")
+        video_path = './test4.mp4'
+        cap, out, _, _, _ = abrir_video(video_path)
+        usar_webcam = False
+    else:
+        print("Cámara encontrada. Usando webcam.")
+        usar_webcam = True
+
+    # Configuramos el tamaqño del video ,RESOLUCIÓN
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # ancho
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360) # alto
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  # Obtener valor real del ancho
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # Obtener valor real de la altura
+
+    # Crear archivo de salida
+    salida_nombre = 'salida_webcam_2.avi' if usar_webcam else 'salida_video.avi'
+    fps = cap.get(cv2.CAP_PROP_FPS)  # Usamos el fps de la camara
+
+    # Creamos el archivo de salida
+    out = cv2.VideoWriter(
+        salida_nombre,
+        cv2.VideoWriter_fourcc(*'XVID'),
+        fps,
+        (frame_width, frame_height)
+    )
 
     primer_id = None
     rastreo_id = None
     ids_globales = set()
     ultima_coords = None
     frames_perdidos = 0
+    frame_delay = int(1000 / fps)  # Calcula el retraso en milisegundos
 
     while True:
+
         ret, frame = cap.read()
         if not ret:
             break
+        #imagen modo espejo
+        frame = cv2.flip(frame, 1)
 
+        # Procesamiento del frame
         result = detectar_personas(model, frame)
         boxes = result.boxes
         ids_esta_frame = extraer_ids(boxes)
 
-        primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(primer_id, rastreo_id, ids_esta_frame, frames_perdidos)
+        primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(primer_id, rastreo_id,
+                                                                                      ids_esta_frame, frames_perdidos)
         if reiniciar_coords:
             ultima_coords = None
 
-        annotated_frame, ultima_coords = dibujar_anotaciones(result.plot(), boxes, rastreo_id, ultima_coords, ids_globales)
+        annotated_frame, ultima_coords = dibujar_anotaciones(result.plot(), boxes, rastreo_id, ultima_coords,
+                                                             ids_globales)
 
+        # Muestra el frame procesado (opcional)
         cv2.imshow("Seguimiento", annotated_frame)
         out.write(annotated_frame)
+        time.sleep(1 / fps)
 
-        if cv2.waitKey(25) & 0xFF == ord('q'):
+        if cv2.waitKey(frame_delay) & 0xFF == ord('q'):
             break
 
     cap.release()
