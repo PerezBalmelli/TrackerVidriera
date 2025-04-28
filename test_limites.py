@@ -109,7 +109,7 @@ def test_video_sin_personas(modelo):
 def test_video_extremo(modelo):
     """Prueba condiciones extremas como un video completamente blanco o muy borroso."""
 
-    video_path = "TestBorroso.mp4"  # Suponiendo que este video es blanco o borroso
+    video_path = "TestBlanco.mp4"  # Suponiendo que este video es blanco o borroso
     assert os.path.exists(video_path), "El archivo Test2_blanco_o_borroso.mp4 no existe."
     cap = cv2.VideoCapture(video_path)
 
