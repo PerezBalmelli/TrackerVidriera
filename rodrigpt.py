@@ -49,13 +49,13 @@ def convertir_a_angulo(x_centro, frame_width):
     angulo = int((x_centro / frame_width) * 180)
     return angulo
 
-def enviar_angulo_a_esp32(angulo, puerto='COM11', baudrate=9600):
-
-    with serial.Serial(puerto, baudrate, timeout=1) as ser:
-        ser.write(f'{angulo}\n'.encode())
-        print(f'Ángulo enviado: {angulo}')
-    #except serial.SerialException as e:
-    #   print(f"Error de comunicación con ESP32: {e}")
+def enviar_angulo_a_esp32(angulo, puerto='/dev/ttyUSB0', baudrate=9600):
+    try:
+        with serial.Serial(puerto, baudrate, timeout=1) as ser:
+            ser.write(f'{angulo}\n'.encode())
+            print(f'Ángulo enviado: {angulo}')
+    except serial.SerialException as e:
+        print(f"Error de comunicación con ESP32: {e}")
 
 def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width):
     annotated = frame.copy()
