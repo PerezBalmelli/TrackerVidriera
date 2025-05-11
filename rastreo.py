@@ -54,6 +54,25 @@ def enviar_angulo_a_esp32(angulo, puerto='COM3', baudrate=115200):
     ser.write(f'{angulo}\n'.encode())
     print(f'Ángulo enviado: {angulo}')
 
+def convertir_a_comando(x_centro, frame_width):
+    """
+    Convierte la posición del centro al comando adecuado para un servo de rotación continua.
+
+    Parámetros:
+        x_centro (int): Coordenada x del centro de la persona.
+        frame_width (int): Ancho del frame de video.
+    
+    Retorna:
+        comando (int): Comando PWM para el servo (aproximadamente 0-180).
+    """
+    # El punto central es 90. Ajustamos en función de la posición central de la persona
+    if x_centro < frame_width // 2:
+        # Persona hacia la izquierda, mover hacia la izquierda
+        return int(90 - ((frame_width // 2 - x_centro) / (frame_width // 2) * 45))
+    else:
+        # Persona hacia la derecha, mover hacia la derecha
+        return int(90 + ((x_centro - frame_width // 2) / (frame_width // 2) * 45))
+
 def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width):
     annotated = frame.copy()
     coordenadas_texto = ""
@@ -69,11 +88,16 @@ def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, f
                     ultima_coords = coords
                 x1, y1, x2, y2 = map(int, coords)
                 x_centro = (x1 + x2) // 2
-                angulo = convertir_a_angulo(x_centro, frame_width)
-                enviar_angulo_a_esp32(angulo)
+                comando = convertir_a_comando(x_centro, frame_width)  # Usamos la nueva función
+                enviar_angulo_a_esp32(comando)
                 cv2.putText(annotated, f"Rastreando ID: {id_}", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 coordenadas_texto = f"Coordenadas ID {id_}: ({x1}, {y1}), ({x2}, {y2})"
+    # else:
+    #     #Es para parar CR
+    #     print(f"Comando para servo: 90")
+    #     enviar_angulo_a_esp32(90)
+
 
     cv2.putText(annotated, f"Personas detectadas: {len(ids_globales)}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
