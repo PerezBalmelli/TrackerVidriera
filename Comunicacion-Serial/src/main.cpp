@@ -8,13 +8,14 @@
  * Formato JSON esperado: {"pan": valor_entero, "tilt": valor_entero}
  */
 // Configuracion WiFi
-const char* ssid = "asd";
-const char* password = "assd";
+const char* ssid = "ffff";
+const char* password = "inetgr4t1s";
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESP32Servo.h>
 
 // Definiciones para servo si se conecta
 // #define SERVO_PAN_PIN 18
@@ -22,6 +23,10 @@ const char* password = "assd";
 // Valores actuales de pan y tilt
 int currentPan = 90;  // Posicion inicial
 int currentTilt = 90; // Posicion inicial
+
+Servo myServo;  // Crear un objeto servo
+int angulo = 90; // Angulo inicial, 90 es el centro
+const int servoPin = 18; // Pines del ESP32 para conectar el servo, asegúrate de conectar al pin correcto
 
 // Variables para estadisticas y pruebas de rendimiento
 unsigned long totalMessages = 0;         // Total de mensajes recibidos
@@ -277,7 +282,7 @@ void loop() {
   server.handleClient();
   
   // Si hay datos disponibles en el puerto serial
-  if (Serial.available() > 0) {
+  /*if (Serial.available() > 0) {
     // Crear un buffer para almacenar los datos
     StaticJsonDocument<200> doc;
     
@@ -378,6 +383,22 @@ void loop() {
       }
     }
   }
-  
+  */
+  if (Serial.available() > 0) {
+    // Leer la cadena de caracteres recibida
+    String angleString = Serial.readStringUntil('\n');
+    // Convertir la cadena a un entero
+    angulo = angleString.toInt();
+
+    // Verifica que el ángulo sea válido antes de mover el servo
+    if (angulo >= 0 && angulo <= 180) {
+      myServo.write(angulo);
+      Serial.print("Ángulo movido a: ");
+      Serial.println(angulo);
+    } else {
+      Serial.println("Ángulo inválido recibido");
+    }
+  }
   delay(10);
 }
+
