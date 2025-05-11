@@ -1,6 +1,7 @@
 from ultralytics import YOLO
 import cv2
 import serial  # Necesitarás instalar pySerial si no lo tienes: pip install pyserial
+ser = serial.Serial('COM3', 115200, timeout=1)
 
 def inicializar_modelo(ruta_modelo='yolov8n.pt'):
     return YOLO(ruta_modelo)
@@ -49,13 +50,9 @@ def convertir_a_angulo(x_centro, frame_width):
     angulo = int((x_centro / frame_width) * 180)
     return angulo
 
-def enviar_angulo_a_esp32(angulo, puerto='COM11', baudrate=9600):
-
-    with serial.Serial(puerto, baudrate, timeout=1) as ser:
-        ser.write(f'{angulo}\n'.encode())
-        print(f'Ángulo enviado: {angulo}')
-    #except serial.SerialException as e:
-    #   print(f"Error de comunicación con ESP32: {e}")
+def enviar_angulo_a_esp32(angulo, puerto='COM3', baudrate=115200):
+    ser.write(f'{angulo}\n'.encode())
+    print(f'Ángulo enviado: {angulo}')
 
 def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width):
     annotated = frame.copy()

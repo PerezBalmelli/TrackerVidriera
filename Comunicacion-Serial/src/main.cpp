@@ -275,6 +275,10 @@ void setup() {
   Serial.println("Servidor HTTP iniciado");
   Serial.println("Para ver la pagina web, abre en tu navegador: http://" + WiFi.localIP().toString());
   Serial.println("Esperando comandos JSON por Serial... (ej: {\"pan\": 90, \"tilt\": 45})");
+
+  // Inicializar servo
+  myServo.setPeriodHertz(50);
+  myServo.attach(servoPin, 544, 2400);
 }
 
 void loop() {
@@ -282,123 +286,26 @@ void loop() {
   server.handleClient();
   
   // Si hay datos disponibles en el puerto serial
-  /*if (Serial.available() > 0) {
-    // Crear un buffer para almacenar los datos
-    StaticJsonDocument<200> doc;
-    
-    // Leer la linea JSON desde el puerto serial
-    String jsonStr = Serial.readStringUntil('\n');
-    jsonStr.trim(); // Eliminar espacios en blanco adicionales
-    
-    // Verificar si se recibio algo
-    if (jsonStr.length() > 0) {
-      // Registrar el tiempo exacto de recepcion para medir intervalos
-      unsigned long currentTime = micros();
-      
-      // Interpretar el mensaje JSON
-      DeserializationError error = deserializeJson(doc, jsonStr);
-      
-      // Verificar si hubo un error al interpretar el JSON
-      if (error) {
-        Serial.print("Error al analizar JSON: ");
-        Serial.println(error.c_str());
-        lastErrorCount++;
-      } else {
-        // Extraer los valores de pan y tilt
-        if (doc["pan"].is<int>() && doc["tilt"].is<int>()) {
-          currentPan = doc["pan"];
-          currentTilt = doc["tilt"];
-          
-          // Solo imprime los detalles si no estamos en una prueba de estres
-          // para evitar saturar el serial con mensajes
-          if (!stressTestActive) {
-            Serial.print("Recibido: ");
-            Serial.print(jsonStr);
-            Serial.print(" -> Pan: ");
-            Serial.print(currentPan);
-            Serial.print(", Tilt: ");
-            Serial.println(currentTilt);
-          } else if (stressTestMessages % 50 == 0) {
-            // Durante prueba de estres, solo imprimir de vez en cuando
-            Serial.print("Prueba de estres: ");
-            Serial.print(stressTestMessages);
-            Serial.println(" mensajes recibidos");
-          }
-          
-          // Actualizar estadisticas basicas
-          totalMessages++;
-          
-          // Calcular intervalo si no es el primer mensaje
-          if (lastMessageTime > 0) {
-            unsigned long interval = currentTime - lastMessageTime;
-            
-            // Actualizar estadisticas de intervalos
-            totalInterval += interval;
-            if (interval < minInterval) minInterval = interval;
-            if (interval > maxInterval) maxInterval = interval;
-            
-            // Guardar en historial
-            intervalHistory[intervalHistoryIndex] = interval;
-            intervalHistoryIndex = (intervalHistoryIndex + 1) % INTERVAL_HISTORY_SIZE;
-            
-            // Deteccion automatica de prueba de estres
-            // Si recibimos mensajes muy rapidamente (menos de 200ms entre ellos)
-            // consideramos que puede ser una prueba de estres
-            if (!stressTestActive && interval < 200000) { // 200ms en microsegundos
-              // Detectamos un patron de alta velocidad, puede ser inicio de prueba de estres
-              stressTestActive = true;
-              stressTestStartTime = lastMessageTime; // Usar el tiempo del mensaje anterior como inicio
-              stressTestMessages = 1; // Este es el segundo mensaje (ya contamos 1)
-              Serial.println("⚡ Prueba de estres detectada automaticamente");
-            }
-            else if (stressTestActive && interval > 1000000) { // 1 segundo en microsegundos
-              stressTestActive = false;
-              unsigned long testDuration = currentTime - stressTestStartTime;
-              float messagesPerSecond = (stressTestMessages * 1000000.0) / testDuration;
-              
-              Serial.println("\n✅ Prueba de estres finalizada");
-              Serial.print("Resumen: ");
-              Serial.print(stressTestMessages);
-              Serial.print(" mensajes en ");
-              Serial.print(testDuration / 1000000.0, 2);
-              Serial.print(" segundos (");
-              Serial.print(messagesPerSecond, 2);
-              Serial.println(" msg/seg)");
-            }
-          }
-          
-          // Si estamos en una prueba de estres activa, incrementar el contador especifico
-          if (stressTestActive) {
-            stressTestMessages++;
-          }
-          
-          // Actualizar tiempo del ultimo mensaje
-          lastMessageTime = currentTime;
-          
-          // moveServos(currentPan, currentTilt);
-        } else {
-          Serial.println("Error: JSON no contiene campos 'pan' o 'tilt' validos");
-          lastErrorCount++;
-        }
-      }
-    }
-  }
-  */
   if (Serial.available() > 0) {
     // Leer la cadena de caracteres recibida
     String angleString = Serial.readStringUntil('\n');
     // Convertir la cadena a un entero
     angulo = angleString.toInt();
 
+    Serial.print("Recibido: ");
+    Serial.print(angleString);
+
     // Verifica que el ángulo sea válido antes de mover el servo
     if (angulo >= 0 && angulo <= 180) {
       myServo.write(angulo);
       Serial.print("Ángulo movido a: ");
       Serial.println(angulo);
+      // Actualizar estadisticas basicas
+      totalMessages++;
     } else {
       Serial.println("Ángulo inválido recibido");
     }
   }
+  
   delay(10);
 }
-
