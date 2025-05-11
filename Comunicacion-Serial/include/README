@@ -1,0 +1,4 @@
+Para las credenciales del Wi-Fi crear un archivo en la carpeta include, que se llame env.cpp.
+Adentro completar con las credenciales propias, de la siguiente manera:
+const char* ssid = "Nombre wi fi";
+const char* password = "contrasenia wi fi";
