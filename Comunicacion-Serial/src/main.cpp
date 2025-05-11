@@ -8,14 +8,13 @@
  * Formato JSON esperado: {"pan": valor_entero, "tilt": valor_entero}
  */
 // Configuracion WiFi
-const char* ssid = "ffff";
-const char* password = "inetgr4t1s";
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESP32Servo.h>
+#include "../include/env.cpp"
 
 // Definiciones para servo si se conecta
 // #define SERVO_PAN_PIN 18
