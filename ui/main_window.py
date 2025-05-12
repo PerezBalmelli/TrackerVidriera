@@ -618,7 +618,7 @@ class MainWindow(QMainWindow):
         import cv2
         camera_id = self.camera_id_spin.value()
         
-        self.status_bar.showMessage(f"Probando cámara ID {camera_id}...", 0)
+        self.status_bar.showMessage(f"Probando cámara ID {camera_id}... Presione ESC para cerrar", 0)
         
         # Intentar abrir la cámara
         cap = cv2.VideoCapture(camera_id)
@@ -643,14 +643,28 @@ class MainWindow(QMainWindow):
         info_text = f"Cámara ID {camera_id}: Resolución: {width}x{height}, FPS: {fps:.2f}"
         self.video_info_label.setText(info_text)
         
-        # Mostrar una ventana con la vista previa de la cámara
+        # Crear ventana para mostrar la cámara en tiempo real
         window_name = f"Prueba de Cámara ID {camera_id}"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.imshow(window_name, frame)
-        cv2.waitKey(2000)  # Mostrar durante 2 segundos
-        cv2.destroyWindow(window_name)
         
+        # Bucle para mostrar la cámara en tiempo real
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            # Mostrar el frame actual
+            cv2.imshow(window_name, frame)
+            
+            # Comprobar si se ha pulsado ESC para salir
+            key = cv2.waitKey(1)
+            if key == 27:  # ESC
+                break
+        
+        # Liberar recursos
         cap.release()
+        cv2.destroyAllWindows()  # Cerrar todas las ventanas de OpenCV
+        
         self.status_bar.showMessage(f"Prueba de cámara ID {camera_id} completada", 3000)
     
     # Métodos de utilidad para manejo de extensiones de archivo
