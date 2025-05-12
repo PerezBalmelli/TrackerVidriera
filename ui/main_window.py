@@ -34,6 +34,15 @@ class MainWindow(QMainWindow):
         # Inicializar instancias
         self.video_output = VideoOutputManager()
         
+        # Mapa de códecs a extensiones de archivo
+        self.codec_extension_map = {
+            "XVID": ".avi",
+            "MP4V": ".mp4",
+            "MJPG": ".avi",
+            "H264": ".mp4",
+            "AVC1": ".mp4"
+        }
+        
         # Crear barra de estado antes que la interfaz
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -282,14 +291,52 @@ class MainWindow(QMainWindow):
     
     def set_output_file(self):
         """Abre un diálogo para seleccionar la ubicación del archivo de salida."""
-        default_name = Path(self.output_path_edit.text()).name if self.output_path_edit.text() else "salida.avi"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Guardar video como", default_name, 
-            "AVI (*.avi);;MP4 (*.mp4);;MKV (*.mkv);;Todos los archivos (*)"
+        # Obtener el códec seleccionado para sugerir la extensión correcta
+        codec = self.codec_combo.currentText()
+        ext = self.codec_extension_map.get(codec, ".avi")
+        
+        # Crear nombre predeterminado con la extensión correcta
+        if self.output_path_edit.text():
+            base_name = os.path.splitext(Path(self.output_path_edit.text()).name)[0]
+        else:
+            base_name = "salida"
+        
+        default_name = f"{base_name}{ext}"
+        
+        # Configurar el filtro adecuado basado en el códec
+        if ext == ".avi":
+            filter_str = "AVI (*.avi);;MP4 (*.mp4);;MKV (*.mkv);;Todos los archivos (*)"
+        elif ext == ".mp4":
+            filter_str = "MP4 (*.mp4);;AVI (*.avi);;MKV (*.mkv);;Todos los archivos (*)"
+        else:
+            filter_str = "AVI (*.avi);;MP4 (*.mp4);;MKV (*.mkv);;Todos los archivos (*)"
+        
+        # Mostrar diálogo
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Guardar video como", default_name, filter_str
         )
         
         if file_path:
+            # Asegurarse que la extensión coincida con el códec seleccionado
+            file_ext = os.path.splitext(file_path)[1].lower()
+            if file_ext != ext and file_ext not in [".avi", ".mp4", ".mkv"]:
+                file_path = os.path.splitext(file_path)[0] + ext
+            
             self.output_path_edit.setText(file_path)
+            
+            # Actualizar el códec según la extensión seleccionada
+            if file_ext == ".mp4" and codec not in ["MP4V", "H264", "AVC1"]:
+                # Si el usuario eligió .mp4 pero el códec actual no es compatible con MP4
+                new_codec_index = self.codec_combo.findText("MP4V")
+                if new_codec_index >= 0:
+                    self.codec_combo.setCurrentIndex(new_codec_index)
+                    self.status_bar.showMessage("Formato actualizado a MP4V para compatibilidad con el archivo .mp4", 3000)
+            elif file_ext == ".avi" and codec not in ["XVID", "MJPG"]:
+                # Si el usuario eligió .avi pero el códec actual no es compatible con AVI
+                new_codec_index = self.codec_combo.findText("XVID")
+                if new_codec_index >= 0:
+                    self.codec_combo.setCurrentIndex(new_codec_index)
+                    self.status_bar.showMessage("Formato actualizado a XVID para compatibilidad con el archivo .avi", 3000)
     
     def save_settings_from_ui(self):
         """Guarda la configuración actual de la UI en el objeto de configuración."""
@@ -377,6 +424,16 @@ class MainWindow(QMainWindow):
         output_path = self.output_path_edit.text()
         codec = self.codec_combo.currentText()
         
+        # Asegurar que la extensión del archivo coincida con el códec seleccionado
+        recommended_ext = self.codec_extension_map.get(codec, ".avi")
+        
+        # Verificar si la extensión actual es compatible con el códec
+        current_ext = os.path.splitext(output_path)[1].lower()
+        if current_ext not in [".avi", ".mp4", ".mkv"]:
+            # Si no tiene extensión o es inválida, agregar la recomendada
+            output_path = os.path.splitext(output_path)[0] + recommended_ext
+            self.output_path_edit.setText(output_path)
+        
         # Determinar el tipo de entrada (archivo o cámara)
         is_camera = self.input_type_combo.currentIndex() == 1
         
@@ -448,12 +505,34 @@ class MainWindow(QMainWindow):
                 fps = 30.0
                 
             # Configurar el escritor de video
+            # Asegurar que la extensión del archivo coincida con el códec seleccionado
+            output_path = params['output_path']
+            current_ext = os.path.splitext(output_path)[1].lower()
+            recommended_ext = self.codec_extension_map.get(params['codec'], ".avi")
+            
+            if current_ext != recommended_ext:
+                # Cambiamos la extensión para que coincida con el códec
+                output_path = os.path.splitext(output_path)[0] + recommended_ext
+                self.output_path_edit.setText(output_path)
+                self.status_bar.showMessage(f"La extensión se cambió a {recommended_ext} para coincidir con el formato {params['codec']}", 3000)
+                params['output_path'] = output_path  # Actualizar en los parámetros
+            
+            # Configurar el escritor de video con el códec correcto
             fourcc = cv2.VideoWriter_fourcc(*params['codec'])
-            output_dir = os.path.dirname(params['output_path'])
+            output_dir = os.path.dirname(output_path)
             if output_dir and not os.path.exists(output_dir):
                 os.makedirs(output_dir)
                 
-            out = cv2.VideoWriter(params['output_path'], fourcc, fps, (frame_width, frame_height))
+            out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+            
+            if not out.isOpened():
+                self.status_bar.showMessage(f"Error: No se pudo crear el archivo de salida. Verificando compatibilidad...", 3000)
+                # Intentar con un códec alternativo si falla
+                if params['codec'] == "MP4V" and current_ext == ".mp4":
+                    alternate_codec = "H264"
+                    self.status_bar.showMessage(f"Intentando con códec alternativo: {alternate_codec}", 3000)
+                    fourcc = cv2.VideoWriter_fourcc(*alternate_codec)
+                    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
             
             return cap, out, total_frames
         except Exception as e:
