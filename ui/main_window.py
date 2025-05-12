@@ -1,0 +1,596 @@
+"""
+Módulo principal para la interfaz de usuario de TrackerVidriera.
+Implementa la ventana principal y todos los controles de la aplicación.
+"""
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QLabel, QPushButton, QFileDialog, QComboBox,
+    QDoubleSpinBox, QSpinBox, QGroupBox, QFormLayout,
+    QLineEdit, QApplication, QSlider, QStatusBar
+)
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QIcon, QFont, QDoubleValidator
+
+import sys
+import os
+from pathlib import Path
+import glob
+
+# Importamos módulos del proyecto
+from config.settings import settings
+from core.video_output import VideoOutputManager
+
+
+class MainWindow(QMainWindow):
+    """Ventana principal de la aplicación TrackerVidriera."""
+    
+    def __init__(self):
+        super().__init__()
+        
+        # Configuración básica de la ventana
+        self.setWindowTitle("TrackerVidriera")
+        self.setMinimumSize(800, 600)
+        
+        # Inicializar instancias
+        self.video_output = VideoOutputManager()
+        
+        # Crear barra de estado antes que la interfaz
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Listo")
+        
+        # Crear interfaz
+        self.init_ui()
+        
+        # Cargar configuraciones previas
+        self.load_settings_to_ui()
+    
+    def init_ui(self):
+        """Inicializa todos los componentes de la interfaz de usuario."""
+        # Widget central
+        central_widget = QWidget()
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Panel superior con título
+        header_layout = QHBoxLayout()
+        title_label = QLabel("TrackerVidriera")
+        title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        main_layout.addLayout(header_layout)
+        
+        # Contenedor principal (panel izquierdo de configuración y panel derecho de visualización)
+        content_layout = QHBoxLayout()
+        
+        # Panel izquierdo - Configuraciones
+        config_panel = QWidget()
+        config_layout = QVBoxLayout(config_panel)
+        config_layout.setSpacing(10)
+        
+        # Grupo de configuración de entrada
+        self.create_input_config_group(config_layout)
+        
+        # Grupo de configuración del modelo
+        self.create_model_config_group(config_layout)
+        
+        # Grupo de configuración de salida
+        self.create_output_config_group(config_layout)
+        
+        # Botones de acción
+        self.create_action_buttons(config_layout)
+        
+        # Añadir espacio al final
+        config_layout.addStretch()
+        
+        # Añadir panel de configuración al contenedor principal
+        content_layout.addWidget(config_panel, 1)  # Proporción 1
+        
+        # Añadir el contenedor principal al layout principal
+        main_layout.addLayout(content_layout)
+        
+        # Establecer widget central
+        self.setCentralWidget(central_widget)
+    
+    def create_input_config_group(self, parent_layout):
+        """Crea el grupo de configuración de entrada de video."""
+        input_group = QGroupBox("Configuración de entrada")
+        input_layout = QFormLayout()
+        
+        # Selector de tipo de entrada (archivo o cámara)
+        self.input_type_combo = QComboBox()
+        self.input_type_combo.addItems(["Archivo de video", "Cámara en vivo"])
+        self.input_type_combo.currentIndexChanged.connect(self.toggle_input_type)
+        input_layout.addRow("Tipo de entrada:", self.input_type_combo)
+        
+        # Panel para archivo de video
+        self.file_panel = QWidget()
+        file_layout = QHBoxLayout(self.file_panel)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.video_path_edit = QLineEdit()
+        self.video_path_edit.setReadOnly(True)
+        browse_button = QPushButton("Explorar...")
+        browse_button.clicked.connect(self.browse_video_file)
+        
+        file_layout.addWidget(self.video_path_edit)
+        file_layout.addWidget(browse_button)
+        
+        # Panel para cámara
+        self.camera_panel = QWidget()
+        camera_layout = QHBoxLayout(self.camera_panel)
+        camera_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.camera_id_spin = QSpinBox()
+        self.camera_id_spin.setRange(0, 10)  # IDs de cámara comunes
+        self.camera_id_spin.setValue(0)      # Cámara predeterminada
+        self.camera_id_spin.setToolTip("ID de la cámara (0 = cámara predeterminada)")
+        
+        self.test_camera_button = QPushButton("Probar cámara")
+        self.test_camera_button.clicked.connect(self.test_camera)
+        
+        camera_layout.addWidget(self.camera_id_spin)
+        camera_layout.addWidget(self.test_camera_button)
+        
+        # Añadir paneles al layout principal, inicialmente solo mostramos el de archivo
+        input_layout.addRow("Archivo:", self.file_panel)
+        input_layout.addRow("Cámara:", self.camera_panel)
+        self.camera_panel.setVisible(False)
+        
+        # Información del video/cámara
+        self.video_info_label = QLabel("No hay entrada seleccionada")
+        input_layout.addRow("Información:", self.video_info_label)
+        
+        input_group.setLayout(input_layout)
+        parent_layout.addWidget(input_group)
+    
+    def create_model_config_group(self, parent_layout):
+        """Crea el grupo de configuración del modelo de detección."""
+        model_group = QGroupBox("Configuración del modelo")
+        model_layout = QFormLayout()
+        
+        # Selector de modelo - Detectar modelos disponibles
+        self.model_path_combo = QComboBox()
+        self.populate_model_combo()
+        model_layout.addRow("Modelo:", self.model_path_combo)
+        
+        # Umbral de confianza
+        self.confidence_spin = QDoubleSpinBox()
+        self.confidence_spin.setRange(0.1, 1.0)
+        self.confidence_spin.setSingleStep(0.05)
+        self.confidence_spin.setValue(0.6)
+        model_layout.addRow("Umbral de confianza:", self.confidence_spin)
+        
+        # Frames de espera
+        self.frames_wait_spin = QSpinBox()
+        self.frames_wait_spin.setRange(1, 30)
+        self.frames_wait_spin.setValue(10)
+        model_layout.addRow("Frames de espera:", self.frames_wait_spin)
+        
+        model_group.setLayout(model_layout)
+        parent_layout.addWidget(model_group)
+    
+    def populate_model_combo(self):
+        """Busca y añade los modelos disponibles al combo box."""
+        # Limpiar el combo
+        self.model_path_combo.clear()
+        
+        # Buscar modelos en la carpeta models/
+        models_dir = Path(__file__).parent.parent / "models"
+        models_root = Path(__file__).parent.parent
+        
+        # Buscar archivos .pt en la carpeta models/ y en la raíz del proyecto
+        model_files = []
+        
+        # Buscar en la carpeta models/ si existe
+        if models_dir.exists() and models_dir.is_dir():
+            model_files.extend(list(models_dir.glob("*.pt")))
+        
+        # Buscar también en la raíz del proyecto
+        model_files.extend(list(models_root.glob("*.pt")))
+        
+        # Convertir a rutas relativas y ordenar alfabéticamente
+        model_names = sorted([model.name for model in model_files])
+        
+        if not model_names:
+            # Si no se encuentran modelos, añadir opciones predeterminadas
+            model_names = ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt"]
+            self.status_bar.showMessage("No se encontraron modelos en la carpeta 'models/', usando valores predeterminados", 3000)
+        else:
+            self.status_bar.showMessage(f"Se encontraron {len(model_names)} modelos", 3000)
+        
+        # Añadir al combo
+        self.model_path_combo.addItems(model_names)
+    
+    def create_output_config_group(self, parent_layout):
+        """Crea el grupo de configuración de salida de video."""
+        output_group = QGroupBox("Configuración de salida")
+        output_layout = QFormLayout()
+        
+        # Ruta de salida
+        self.output_path_edit = QLineEdit("salida.avi")
+        output_save_button = QPushButton("Guardar como...")
+        output_save_button.clicked.connect(self.set_output_file)
+        
+        output_path_layout = QHBoxLayout()
+        output_path_layout.addWidget(self.output_path_edit)
+        output_path_layout.addWidget(output_save_button)
+        
+        output_layout.addRow("Archivo de salida:", output_path_layout)
+        
+        # Formato de salida (códec)
+        self.codec_combo = QComboBox()
+        self.codec_combo.addItems(["XVID", "MP4V", "MJPG", "H264", "AVC1"])
+        output_layout.addRow("Formato:", self.codec_combo)
+        
+        output_group.setLayout(output_layout)
+        parent_layout.addWidget(output_group)
+    
+    def create_action_buttons(self, parent_layout):
+        """Crea los botones de acción principales."""
+        buttons_layout = QHBoxLayout()
+        
+        # Botón de procesar video
+        self.process_button = QPushButton("Procesar video")
+        self.process_button.setMinimumHeight(40)
+        self.process_button.setEnabled(False)  # Deshabilitado hasta que se seleccione un video
+        self.process_button.clicked.connect(self.process_video)
+        
+        # Botón de guardar configuración
+        self.save_config_button = QPushButton("Guardar configuración")
+        self.save_config_button.clicked.connect(self.save_settings_from_ui)
+        
+        buttons_layout.addWidget(self.process_button)
+        buttons_layout.addWidget(self.save_config_button)
+        
+        parent_layout.addLayout(buttons_layout)
+    
+    def browse_video_file(self):
+        """Abre un diálogo para seleccionar un archivo de video."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar video", "", 
+            "Archivos de video (*.mp4 *.avi *.mov *.mkv);;Todos los archivos (*)"
+        )
+        
+        if file_path:
+            self.video_path_edit.setText(file_path)
+            self.update_video_info(file_path)
+            self.process_button.setEnabled(True)
+    
+    def update_video_info(self, video_path):
+        """Actualiza la información del video seleccionado."""
+        import cv2
+        
+        # Obtener información del video
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                self.video_info_label.setText("Error al abrir el video")
+                return
+            
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = frame_count / fps if fps > 0 else 0
+            
+            info_text = f"Resolución: {width}x{height}, FPS: {fps:.2f}, Duración: {duration:.2f}s"
+            self.video_info_label.setText(info_text)
+            
+            cap.release()
+        except Exception as e:
+            self.video_info_label.setText(f"Error al leer información: {str(e)}")
+    
+    def set_output_file(self):
+        """Abre un diálogo para seleccionar la ubicación del archivo de salida."""
+        default_name = Path(self.output_path_edit.text()).name if self.output_path_edit.text() else "salida.avi"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar video como", default_name, 
+            "AVI (*.avi);;MP4 (*.mp4);;MKV (*.mkv);;Todos los archivos (*)"
+        )
+        
+        if file_path:
+            self.output_path_edit.setText(file_path)
+    
+    def save_settings_from_ui(self):
+        """Guarda la configuración actual de la UI en el objeto de configuración."""
+        # Actualizar configuraciones desde la UI
+        settings.model_path = self.model_path_combo.currentText()
+        settings.confidence_threshold = self.confidence_spin.value()
+        settings.frames_espera = self.frames_wait_spin.value()
+        settings.output_path = self.output_path_edit.text()
+        settings.output_format = self.codec_combo.currentText()
+        
+        # Guardar configuraciones
+        success = settings.save_settings()
+        
+        if success:
+            self.status_bar.showMessage("Configuración guardada correctamente", 3000)
+        else:
+            self.status_bar.showMessage("Error al guardar la configuración", 3000)
+    
+    def load_settings_to_ui(self):
+        """Carga la configuración desde el objeto de configuración a la UI."""
+        index = self.model_path_combo.findText(settings.model_path)
+        if index >= 0:
+            self.model_path_combo.setCurrentIndex(index)
+        
+        self.confidence_spin.setValue(settings.confidence_threshold)
+        self.frames_wait_spin.setValue(settings.frames_espera)
+        self.output_path_edit.setText(settings.output_path)
+        
+        index = self.codec_combo.findText(settings.output_format)
+        if index >= 0:
+            self.codec_combo.setCurrentIndex(index)
+    
+    def process_video(self):
+        """Procesa el video seleccionado utilizando la lógica de rastreo."""
+        # Importar funciones de rastreo.py
+        from rastreo import (
+            inicializar_modelo, detectar_personas, 
+            extraer_ids, actualizar_rastreo, dibujar_anotaciones
+        )
+        import cv2
+        
+        # Obtener parámetros de configuración
+        params = self._get_processing_parameters()
+        if not params:
+            return
+            
+        # Iniciar procesamiento
+        self.status_bar.showMessage(f"Procesando video: {params['video_path']}...", 0)
+        
+        try:
+            # Inicializar el modelo
+            model = inicializar_modelo(str(params['model_path']))
+            
+            # Configurar video de entrada y salida
+            cap, out, total_frames = self._setup_video_io(params)
+            if not cap or not out:
+                return
+                
+            # Realizar el procesamiento del video utilizando funciones de rastreo.py
+            self._process_video_with_tracking(
+                model, cap, out, params['confidence'], 
+                params['frames_espera'], total_frames,
+                detectar_personas, extraer_ids, 
+                actualizar_rastreo, dibujar_anotaciones
+            )
+            
+            # Liberar recursos
+            cap.release()
+            out.release()
+            
+            self.status_bar.showMessage(
+                f"Video procesado correctamente. Guardado en: {params['output_path']}", 5000
+            )
+            
+        except Exception as e:
+            self.status_bar.showMessage(f"Error durante el procesamiento: {str(e)}", 5000)
+            import traceback
+            traceback.print_exc()
+    
+    def _get_processing_parameters(self):
+        """Obtiene y valida los parámetros de procesamiento desde la UI."""
+        model_name = self.model_path_combo.currentText()
+        confidence = self.confidence_spin.value()
+        frames_espera = self.frames_wait_spin.value()
+        output_path = self.output_path_edit.text()
+        codec = self.codec_combo.currentText()
+        
+        # Determinar el tipo de entrada (archivo o cámara)
+        is_camera = self.input_type_combo.currentIndex() == 1
+        
+        if is_camera:
+            # Entrada desde cámara
+            camera_id = self.camera_id_spin.value()
+            video_path = camera_id  # Guardamos el ID de la cámara
+        else:
+            # Entrada desde archivo
+            video_path = self.video_path_edit.text()
+            if not video_path:
+                self.status_bar.showMessage("Error: No se ha seleccionado ningún video", 3000)
+                return None
+            
+        # Verificar que el modelo existe
+        models_dir = Path(__file__).parent.parent / "models"
+        model_path = models_dir / model_name
+        if not model_path.exists():
+            model_path = Path(__file__).parent.parent / model_name
+            if not model_path.exists():
+                self.status_bar.showMessage(f"Error: No se encuentra el modelo {model_name}", 3000)
+                return None
+                
+        return {
+            'video_path': video_path,
+            'is_camera': is_camera,
+            'model_path': model_path,
+            'confidence': confidence,
+            'frames_espera': frames_espera,
+            'output_path': output_path,
+            'codec': codec
+        }
+    
+    def _setup_video_io(self, params):
+        """Configura el video de entrada y salida para el procesamiento."""
+        import cv2
+        import os
+        
+        try:
+            # Abrir video o cámara
+            if params['is_camera']:
+                # Es una cámara
+                camera_id = params['video_path']  # El ID de la cámara
+                cap = cv2.VideoCapture(camera_id)
+                if not cap.isOpened():
+                    self.status_bar.showMessage(f"Error: No se pudo abrir la cámara ID {camera_id}", 3000)
+                    return None, None, 0
+                
+                # Para cámaras en vivo, no hay total_frames, usamos valor especial -1
+                total_frames = -1
+            else:
+                # Es un archivo de video
+                video_path = params['video_path']
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    self.status_bar.showMessage(f"Error: No se pudo abrir el video {video_path}", 3000)
+                    return None, None, 0
+                
+                # Para archivos, obtenemos el número total de frames
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                
+            # Obtener propiedades del video/cámara
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            
+            # Si la cámara reporta fps = 0 (común en algunas webcams), usar un valor predeterminado
+            if fps <= 0:
+                fps = 30.0
+                
+            # Configurar el escritor de video
+            fourcc = cv2.VideoWriter_fourcc(*params['codec'])
+            output_dir = os.path.dirname(params['output_path'])
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                
+            out = cv2.VideoWriter(params['output_path'], fourcc, fps, (frame_width, frame_height))
+            
+            return cap, out, total_frames
+        except Exception as e:
+            self.status_bar.showMessage(f"Error al configurar el procesamiento: {str(e)}", 3000)
+            return None, None, 0
+    
+    def _process_video_with_tracking(self, model, cap, out, confidence, frames_espera, 
+                                    total_frames, detectar_personas, extraer_ids,
+                                    actualizar_rastreo, dibujar_anotaciones):
+        """
+        Procesa cada frame del video utilizando las funciones importadas de rastreo.py.
+        """
+        import cv2
+        
+        # Variables para el rastreo
+        primer_id = None
+        rastreo_id = None
+        ids_globales = set()
+        ultima_coords = None
+        frames_perdidos = 0
+        frame_count = 0
+        
+        # Para modo de cámara en vivo, mostrar el proceso en tiempo real
+        is_live_camera = total_frames == -1
+        window_name = "TrackerVidriera - Procesamiento en vivo"
+        
+        if is_live_camera:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            self.status_bar.showMessage("Procesando cámara en vivo. Presione 'q' para detener.", 0)
+        
+        # Procesar frame por frame
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            # Actualizar barra de estado con progreso
+            frame_count += 1
+            if not is_live_camera and total_frames > 0:
+                progress = int((frame_count / total_frames) * 100)
+                self.status_bar.showMessage(f"Procesando video: {progress}% completado", 0)
+            elif frame_count % 30 == 0:  # Actualizar cada 30 frames para cámara en vivo
+                self.status_bar.showMessage(f"Frames procesados: {frame_count}", 0)
+            
+            # Detectar personas usando la función de rastreo.py
+            result = detectar_personas(model, frame)
+            if result is None:
+                continue
+                
+            boxes = result.boxes
+            
+            # Extraer IDs en este frame
+            ids_esta_frame = extraer_ids(boxes)
+            
+            # Actualizar rastreo usando la función de rastreo.py
+            primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(
+                primer_id, rastreo_id, ids_esta_frame, frames_perdidos, frames_espera
+            )
+            
+            if reiniciar_coords:
+                ultima_coords = None
+            
+            # Dibujar anotaciones usando la función de rastreo.py
+            annotated, ultima_coords = dibujar_anotaciones(
+                result.plot(), boxes, rastreo_id, ultima_coords, ids_globales
+            )
+            
+            # Guardar frame procesado
+            out.write(annotated)
+            
+            # Si es cámara en vivo, mostrar el resultado en tiempo real
+            if is_live_camera:
+                cv2.imshow(window_name, annotated)
+                # Verificar si el usuario quiere detener el proceso (presionando 'q')
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        
+        # Cerrar ventanas si estábamos en modo cámara en vivo
+        if is_live_camera:
+            cv2.destroyAllWindows()
+    
+    def toggle_input_type(self, index):
+        """Cambia entre los modos de entrada: archivo de video o cámara en vivo."""
+        if index == 0:  # Archivo de video
+            self.file_panel.setVisible(True)
+            self.camera_panel.setVisible(False)
+            # Actualizar información del video si hay uno seleccionado
+            if self.video_path_edit.text():
+                self.update_video_info(self.video_path_edit.text())
+            else:
+                self.video_info_label.setText("No hay video seleccionado")
+            # Habilitar el botón de procesar solo si hay un video seleccionado
+            self.process_button.setEnabled(bool(self.video_path_edit.text()))
+        else:  # Cámara en vivo
+            self.file_panel.setVisible(False)
+            self.camera_panel.setVisible(True)
+            self.video_info_label.setText("Cámara: Sin información (usar 'Probar cámara')")
+            # Habilitar el botón de procesar ya que se puede usar la cámara directamente
+            self.process_button.setEnabled(True)
+            self.process_button.setText("Iniciar procesamiento en vivo")
+
+    def test_camera(self):
+        """Prueba la cámara seleccionada para verificar que funciona."""
+        import cv2
+        camera_id = self.camera_id_spin.value()
+        
+        self.status_bar.showMessage(f"Probando cámara ID {camera_id}...", 0)
+        
+        # Intentar abrir la cámara
+        cap = cv2.VideoCapture(camera_id)
+        if not cap.isOpened():
+            self.status_bar.showMessage(f"Error: No se pudo abrir la cámara ID {camera_id}", 3000)
+            self.video_info_label.setText(f"Error: No se pudo abrir la cámara ID {camera_id}")
+            return
+        
+        # Leer un frame para obtener las propiedades
+        ret, frame = cap.read()
+        if not ret:
+            self.status_bar.showMessage(f"Error: No se pudo leer desde la cámara ID {camera_id}", 3000)
+            self.video_info_label.setText(f"Error: No se pudo leer desde la cámara ID {camera_id}")
+            cap.release()
+            return
+        
+        # Mostrar información de la cámara
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        info_text = f"Cámara ID {camera_id}: Resolución: {width}x{height}, FPS: {fps:.2f}"
+        self.video_info_label.setText(info_text)
+        
+        # Mostrar una ventana con la vista previa de la cámara
+        window_name = f"Prueba de Cámara ID {camera_id}"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.imshow(window_name, frame)
+        cv2.waitKey(2000)  # Mostrar durante 2 segundos
+        cv2.destroyWindow(window_name)
+        
+        cap.release()
+        self.status_bar.showMessage(f"Prueba de cámara ID {camera_id} completada", 3000)
