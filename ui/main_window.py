@@ -498,6 +498,9 @@ class MainWindow(QMainWindow):
             elif frame_count % 30 == 0:  # Actualizar cada 30 frames para cámara en vivo
                 self.status_bar.showMessage(f"Frames procesados: {frame_count}", 0)
             
+            # Obtener el ancho del frame para pasarlo a dibujar_anotaciones
+            frame_width = frame.shape[1]
+            
             # Detectar personas usando la función de rastreo.py
             result = detectar_personas(model, frame)
             if result is None:
@@ -518,7 +521,8 @@ class MainWindow(QMainWindow):
             
             # Dibujar anotaciones usando la función de rastreo.py
             annotated, ultima_coords = dibujar_anotaciones(
-                result.plot(), boxes, rastreo_id, ultima_coords, ids_globales
+                result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
+                frame_width
             )
             
             # Guardar frame procesado
