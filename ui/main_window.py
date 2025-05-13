@@ -327,7 +327,6 @@ class MainWindow(QMainWindow):
             
             # Actualizar el códec según la extensión seleccionada por el usuario
             self._update_codec_for_extension(file_ext)
-    
     def save_settings_from_ui(self):
         """Guarda la configuración actual de la UI en el objeto de configuración."""
         # Actualizar configuraciones desde la UI
@@ -534,9 +533,14 @@ class MainWindow(QMainWindow):
         is_live_camera = total_frames == -1
         window_name = "TrackerVidriera - Procesamiento en vivo"
         
+        # Determinar si debemos controlar el servo (solo para cámara en vivo)
+        controlar_servo = is_live_camera
+        
         if is_live_camera:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            self.status_bar.showMessage("Procesando cámara en vivo. Presione 'q' para detener.", 0)
+            self.status_bar.showMessage(f"Procesando cámara en vivo. {'Controlando servo. ' if controlar_servo else ''}Presione 'q' para detener.", 0)
+        else:
+            self.status_bar.showMessage("Procesando archivo de video (sin control de servo)...", 0)
         
         # Procesar frame por frame
         while True:
@@ -576,7 +580,7 @@ class MainWindow(QMainWindow):
             # Dibujar anotaciones usando la función de rastreo.py
             annotated, ultima_coords = dibujar_anotaciones(
                 result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
-                frame_width, controlar_servo=False  # No controlamos el servo por defecto
+                frame_width, controlar_servo=controlar_servo  # Controlar servo solo en modo cámara en vivo
             )
             
             # Guardar frame procesado
