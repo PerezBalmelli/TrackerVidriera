@@ -124,7 +124,7 @@ def convertir_a_comando(x_centro, frame_width):
         # Persona hacia la derecha, mover hacia la derecha
         return int(90 + ((x_centro - frame_width // 2) / (frame_width // 2) * 45))
 
-def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width):
+def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width, controlar_servo=False):
     annotated = frame.copy()
     coordenadas_texto = ""
 
@@ -139,16 +139,15 @@ def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, f
                     ultima_coords = coords
                 x1, y1, x2, y2 = map(int, coords)
                 x_centro = (x1 + x2) // 2
-                comando = convertir_a_comando(x_centro, frame_width)  # Usamos la nueva función
-                enviar_angulo_a_esp32(comando)
+                
+                # Solo enviar comandos al servo si se ha habilitado
+                if controlar_servo:
+                    comando = convertir_a_comando(x_centro, frame_width)
+                    enviar_angulo_a_esp32(comando)
+                
                 cv2.putText(annotated, f"Rastreando ID: {id_}", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 coordenadas_texto = f"Coordenadas ID {id_}: ({x1}, {y1}), ({x2}, {y2})"
-    # else:
-    #     #Es para parar CR
-    #     print(f"Comando para servo: 90")
-    #     enviar_angulo_a_esp32(90)
-
 
     cv2.putText(annotated, f"Personas detectadas: {len(ids_globales)}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
@@ -187,7 +186,7 @@ def main():
             ultima_coords = None
 
         annotated_frame, ultima_coords = dibujar_anotaciones(
-            result.plot(), boxes, rastreo_id, ultima_coords, ids_globales, frame_width
+            result.plot(), boxes, rastreo_id, ultima_coords, ids_globales, frame_width, controlar_servo=True
         )
 
         cv2.imshow("Seguimiento", annotated_frame)

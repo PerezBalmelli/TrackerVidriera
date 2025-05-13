@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
             # Dibujar anotaciones usando la función de rastreo.py
             annotated, ultima_coords = dibujar_anotaciones(
                 result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
-                frame_width
+                frame_width, controlar_servo=False  # No controlamos el servo por defecto
             )
             
             # Guardar frame procesado
