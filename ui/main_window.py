@@ -556,7 +556,7 @@ class MainWindow(QMainWindow):
             frame_width = frame.shape[1]
             
             # Detectar personas usando la función de rastreo.py
-            result = detectar_personas(model, frame)
+            result = detectar_personas(model, frame, confidence)
             if result is None:
                 continue
                 

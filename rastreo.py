@@ -14,8 +14,8 @@ def abrir_video(ruta_video):
     out = cv2.VideoWriter('salida.avi', cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
     return cap, out, frame_width, frame_height, fps
 
-def detectar_personas(modelo, frame):
-    resultados = modelo.track(frame, persist=True, conf=0.6, classes=[0])  # Solo clase 0: persona
+def detectar_personas(modelo, frame, confidence=0.6):
+    resultados = modelo.track(frame, persist=True, conf=confidence, classes=[0])  # Solo clase 0: persona
     return resultados[0]
 
 def extraer_ids(boxes):
