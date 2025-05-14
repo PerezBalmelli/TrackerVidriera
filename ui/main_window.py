@@ -43,6 +43,9 @@ class MainWindow(QMainWindow):
             "AVC1": ".mp4"
         }
         
+        # Lista de cámaras disponibles
+        self.available_cameras = []
+        
         # Crear barra de estado antes que la interfaz
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -129,15 +132,22 @@ class MainWindow(QMainWindow):
         camera_layout = QHBoxLayout(self.camera_panel)
         camera_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.camera_id_spin = QSpinBox()
-        self.camera_id_spin.setRange(0, 10)  # IDs de cámara comunes
-        self.camera_id_spin.setValue(0)      # Cámara predeterminada
-        self.camera_id_spin.setToolTip("ID de la cámara (0 = cámara predeterminada)")
+        # Reemplazar el QSpinBox por un QComboBox para las cámaras
+        self.camera_combo = QComboBox()
+        self.camera_combo.setMinimumWidth(250)
+        self.camera_combo.setToolTip("Seleccione la cámara a utilizar")
+        
+        # Botón para refrescar la lista de cámaras
+        refresh_cameras_button = QPushButton("🔄")
+        refresh_cameras_button.setToolTip("Actualizar lista de cámaras")
+        refresh_cameras_button.setFixedWidth(30)
+        refresh_cameras_button.clicked.connect(self.refresh_cameras)
         
         self.test_camera_button = QPushButton("Probar cámara")
         self.test_camera_button.clicked.connect(self.test_camera)
         
-        camera_layout.addWidget(self.camera_id_spin)
+        camera_layout.addWidget(self.camera_combo)
+        camera_layout.addWidget(refresh_cameras_button)
         camera_layout.addWidget(self.test_camera_button)
         
         # Añadir paneles al layout principal, inicialmente solo mostramos el de archivo
@@ -151,6 +161,23 @@ class MainWindow(QMainWindow):
         
         input_group.setLayout(input_layout)
         parent_layout.addWidget(input_group)
+        
+    def refresh_cameras(self):
+        """Detecta y actualiza la lista de cámaras disponibles."""
+        self.status_bar.showMessage("Buscando cámaras disponibles...", 0)
+        self.camera_combo.clear()
+        
+        # Detectar cámaras
+        cameras = self.detect_available_cameras(max_cameras=5)  # Limitamos a 5 para que sea rápido
+        
+        if not cameras:
+            self.camera_combo.addItem("Cámara 0 (predeterminada)")
+            self.status_bar.showMessage("No se detectaron cámaras. Usando ID 0 por defecto.", 3000)
+        else:
+            # Añadir las cámaras detectadas al combo
+            for camera_id, description in cameras:
+                self.camera_combo.addItem(description, camera_id)
+            self.status_bar.showMessage(f"Se encontraron {len(cameras)} cámaras", 3000)
     
     def create_model_config_group(self, parent_layout):
         """Crea el grupo de configuración del modelo de detección."""
@@ -420,8 +447,19 @@ class MainWindow(QMainWindow):
         is_camera = self.input_type_combo.currentIndex() == 1
         
         if is_camera:
-            # Entrada desde cámara
-            camera_id = self.camera_id_spin.value()
+            # Si no hay cámaras detectadas, intentar buscarlas primero
+            if self.camera_combo.count() == 0:
+                self.refresh_cameras()
+                if self.camera_combo.count() == 0:
+                    self.status_bar.showMessage("Error: No se detectaron cámaras", 3000)
+                    return None
+            
+            # Entrada desde cámara - obtener ID del ComboBox
+            camera_id = self.camera_combo.currentData()
+            if camera_id is None:
+                # Usar índice 0 como fallback si no hay datos asociados
+                camera_id = 0
+                
             video_path = camera_id  # Guardamos el ID de la cámara
         else:
             # Entrada desde archivo
@@ -599,43 +637,83 @@ class MainWindow(QMainWindow):
     
     def toggle_input_type(self, index):
         """Cambia entre los modos de entrada: archivo de video o cámara en vivo."""
+        # Obtener el layout de formulario del grupo de entrada
+        form_layout = self.file_panel.parent().layout()
+        
+        # Encontrar las filas correspondientes a Archivo y Cámara
+        file_row = self._find_form_row(form_layout, self.file_panel)
+        camera_row = self._find_form_row(form_layout, self.camera_panel)
+        
         if index == 0:  # Archivo de video
-            self.file_panel.setVisible(True)
-            self.camera_panel.setVisible(False)
+            # Mostrar fila de archivo y ocultar fila de cámara
+            if file_row >= 0:
+                self._set_form_row_visible(form_layout, file_row, True)
+            if camera_row >= 0:
+                self._set_form_row_visible(form_layout, camera_row, False)
+            
+            # Actualizar etiqueta de información
+            self._update_form_row_label(form_layout, self.video_info_label, "Información:")
+            
             # Actualizar información del video si hay uno seleccionado
             if self.video_path_edit.text():
                 self.update_video_info(self.video_path_edit.text())
             else:
                 self.video_info_label.setText("No hay video seleccionado")
+                
             # Habilitar el botón de procesar solo si hay un video seleccionado
             self.process_button.setEnabled(bool(self.video_path_edit.text()))
+            self.process_button.setText("Procesar video")
         else:  # Cámara en vivo
-            self.file_panel.setVisible(False)
-            self.camera_panel.setVisible(True)
-            self.video_info_label.setText("Cámara: Sin información (usar 'Probar cámara')")
-            # Habilitar el botón de procesar ya que se puede usar la cámara directamente
+            # Ocultar fila de archivo y mostrar fila de cámara
+            if file_row >= 0:
+                self._set_form_row_visible(form_layout, file_row, False)
+            if camera_row >= 0:
+                self._set_form_row_visible(form_layout, camera_row, True)
+            
+            # Actualizar etiqueta de información
+            self._update_form_row_label(form_layout, self.video_info_label, "Información cámara:")
+            
+            self.video_info_label.setText("Sin información (usar 'Probar cámara')")
+            
+            # Si no hay cámaras detectadas todavía, buscarlas automáticamente
+            if self.camera_combo.count() == 0:
+                self.refresh_cameras()
+            
+            # Habilitar el botón de procesar para la cámara
             self.process_button.setEnabled(True)
             self.process_button.setText("Iniciar procesamiento en vivo")
 
     def test_camera(self):
         """Prueba la cámara seleccionada para verificar que funciona."""
         import cv2
-        camera_id = self.camera_id_spin.value()
         
-        self.status_bar.showMessage(f"Probando cámara ID {camera_id}... Presione ESC para cerrar", 0)
+        # Si no hay cámaras detectadas, intentar buscarlas primero
+        if self.camera_combo.count() == 0:
+            self.refresh_cameras()
+            if self.camera_combo.count() == 0:
+                self.status_bar.showMessage("No se detectaron cámaras disponibles", 3000)
+                return
+        
+        # Obtener el ID de la cámara seleccionada
+        camera_id = self.camera_combo.currentData()
+        if camera_id is None:
+            # Usar el índice como ID si no hay datos asociados (para compatibilidad)
+            camera_id = 0
+        
+        self.status_bar.showMessage(f"Probando cámara {self.camera_combo.currentText()}... Presione ESC para cerrar", 0)
         
         # Intentar abrir la cámara
         cap = cv2.VideoCapture(camera_id)
         if not cap.isOpened():
-            self.status_bar.showMessage(f"Error: No se pudo abrir la cámara ID {camera_id}", 3000)
-            self.video_info_label.setText(f"Error: No se pudo abrir la cámara ID {camera_id}")
+            self.status_bar.showMessage(f"Error: No se pudo abrir la cámara seleccionada", 3000)
+            self.video_info_label.setText(f"Error: No se pudo abrir la cámara seleccionada")
             return
         
         # Leer un frame para obtener las propiedades
         ret, frame = cap.read()
         if not ret:
-            self.status_bar.showMessage(f"Error: No se pudo leer desde la cámara ID {camera_id}", 3000)
-            self.video_info_label.setText(f"Error: No se pudo leer desde la cámara ID {camera_id}")
+            self.status_bar.showMessage(f"Error: No se pudo leer desde la cámara seleccionada", 3000)
+            self.video_info_label.setText(f"Error: No se pudo leer desde la cámara seleccionada")
             cap.release()
             return
         
@@ -644,11 +722,11 @@ class MainWindow(QMainWindow):
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         
-        info_text = f"Cámara ID {camera_id}: Resolución: {width}x{height}, FPS: {fps:.2f}"
+        info_text = f"Cámara: {self.camera_combo.currentText()}, Resolución: {width}x{height}, FPS: {fps:.2f}"
         self.video_info_label.setText(info_text)
         
         # Crear ventana para mostrar la cámara en tiempo real
-        window_name = f"Prueba de Cámara ID {camera_id}"
+        window_name = f"Prueba de {self.camera_combo.currentText()}"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         
         # Bucle para mostrar la cámara en tiempo real
@@ -669,7 +747,38 @@ class MainWindow(QMainWindow):
         cap.release()
         cv2.destroyAllWindows()  # Cerrar todas las ventanas de OpenCV
         
-        self.status_bar.showMessage(f"Prueba de cámara ID {camera_id} completada", 3000)
+        self.status_bar.showMessage(f"Prueba de cámara completada", 3000)
+    
+    def detect_available_cameras(self, max_cameras=10):
+        """
+        Detecta las cámaras disponibles en el sistema.
+        
+        Args:
+            max_cameras (int): Número máximo de cámaras a comprobar.
+            
+        Returns:
+            list: Lista de tuplas (id, descripción) de las cámaras disponibles.
+        """
+        import cv2
+        
+        self.available_cameras = []
+        
+        # En sistemas Windows, las cámaras suelen estar en índices consecutivos
+        # empezando desde 0. Intentamos abrir cada índice.
+        for i in range(max_cameras):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                # La cámara está disponible
+                ret, frame = cap.read()
+                if ret:
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    description = f"Cámara {i}: {width}x{height}"
+                    self.available_cameras.append((i, description))
+                cap.release()
+        
+        self.status_bar.showMessage(f"Se encontraron {len(self.available_cameras)} cámaras", 3000)
+        return self.available_cameras
     
     # Métodos de utilidad para manejo de extensiones de archivo
     
@@ -769,3 +878,65 @@ class MainWindow(QMainWindow):
                 return True
                 
         return False
+
+    def _find_form_row(self, form_layout, widget):
+        """
+        Encuentra el índice de fila que contiene un widget específico en un QFormLayout.
+        
+        Args:
+            form_layout: El QFormLayout donde buscar.
+            widget: El widget a encontrar.
+            
+        Returns:
+            int: Índice de la fila o -1 si no se encuentra.
+        """
+        from PyQt6.QtWidgets import QFormLayout
+        
+        for i in range(form_layout.rowCount()):
+            item = form_layout.itemAt(i, QFormLayout.ItemRole.FieldRole)
+            if item and item.widget() == widget:
+                return i
+        return -1
+    
+    def _set_form_row_visible(self, form_layout, row_index, visible):
+        """
+        Establece la visibilidad de una fila completa en un QFormLayout.
+        
+        Args:
+            form_layout: El QFormLayout que contiene la fila.
+            row_index: Índice de la fila.
+            visible: True para mostrar, False para ocultar.
+        """
+        from PyQt6.QtWidgets import QFormLayout
+        
+        # Obtener widget de etiqueta
+        label_item = form_layout.itemAt(row_index, QFormLayout.ItemRole.LabelRole)
+        if label_item and label_item.widget():
+            label_item.widget().setVisible(visible)
+        
+        # Obtener widget de campo
+        field_item = form_layout.itemAt(row_index, QFormLayout.ItemRole.FieldRole)
+        if field_item and field_item.widget():
+            field_item.widget().setVisible(visible)
+            
+    def _update_form_row_label(self, form_layout, widget, new_label):
+        """
+        Actualiza la etiqueta de una fila en un QFormLayout.
+        
+        Args:
+            form_layout: El QFormLayout donde se encuentra el widget.
+            widget: El widget cuya etiqueta se quiere actualizar.
+            new_label: La nueva etiqueta a asignar.
+        """
+        from PyQt6.QtWidgets import QFormLayout, QLabel
+        
+        # Encontrar el widget en el layout
+        for i in range(form_layout.rowCount()):
+            field_item = form_layout.itemAt(i, QFormLayout.ItemRole.FieldRole)
+            if field_item and field_item.widget() == widget:
+                # Obtener el widget de etiqueta
+                label_item = form_layout.itemAt(i, QFormLayout.ItemRole.LabelRole)
+                if label_item and label_item.widget():
+                    label_widget = label_item.widget()
+                    if isinstance(label_widget, QLabel):
+                        label_widget.setText(new_label)
