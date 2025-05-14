@@ -576,7 +576,9 @@ class MainWindow(QMainWindow):
         
         if is_live_camera:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            self.status_bar.showMessage(f"Procesando cámara en vivo. {'Controlando servo. ' if controlar_servo else ''}Presione 'q' para detener.", 0)
+            # Permitir que la ventana se cierre con la X
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+            self.status_bar.showMessage(f"Procesando cámara en vivo. {'Controlando servo. ' if controlar_servo else ''}Presione 'q' para detener o cierre la ventana.", 0)
         else:
             self.status_bar.showMessage("Procesando archivo de video (sin control de servo)...", 0)
         
@@ -627,13 +629,19 @@ class MainWindow(QMainWindow):
             # Si es cámara en vivo, mostrar el resultado en tiempo real
             if is_live_camera:
                 cv2.imshow(window_name, annotated)
-                # Verificar si el usuario quiere detener el proceso (presionando 'q')
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                
+                # Comprobar si se ha pulsado 'q' para salir
+                key = cv2.waitKey(1)
+                if key & 0xFF == ord('q'):
+                    break
+                
+                # Comprobar si la ventana fue cerrada por el usuario con el botón X
+                if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                     break
         
         # Cerrar ventanas si estábamos en modo cámara en vivo
         if is_live_camera:
-            cv2.destroyAllWindows()
+            cv2.destroyAllWindows()  # Cerrar todas las ventanas de OpenCV
     
     def toggle_input_type(self, index):
         """Cambia entre los modos de entrada: archivo de video o cámara en vivo."""
@@ -700,7 +708,7 @@ class MainWindow(QMainWindow):
             # Usar el índice como ID si no hay datos asociados (para compatibilidad)
             camera_id = 0
         
-        self.status_bar.showMessage(f"Probando cámara {self.camera_combo.currentText()}... Presione ESC para cerrar", 0)
+        self.status_bar.showMessage(f"Probando cámara {self.camera_combo.currentText()}... Presione ESC para cerrar o cierre la ventana", 0)
         
         # Intentar abrir la cámara
         cap = cv2.VideoCapture(camera_id)
@@ -729,6 +737,9 @@ class MainWindow(QMainWindow):
         window_name = f"Prueba de {self.camera_combo.currentText()}"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         
+        # Permitir que la ventana se cierre con la X
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+        
         # Bucle para mostrar la cámara en tiempo real
         while True:
             ret, frame = cap.read()
@@ -741,6 +752,10 @@ class MainWindow(QMainWindow):
             # Comprobar si se ha pulsado ESC para salir
             key = cv2.waitKey(1)
             if key == 27:  # ESC
+                break
+                
+            # Comprobar si la ventana fue cerrada por el usuario con el botón X
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                 break
         
         # Liberar recursos
