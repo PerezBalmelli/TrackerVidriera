@@ -1,45 +1,8 @@
 from ultralytics import YOLO
 import cv2
-import serial  # Necesitarás instalar pySerial si no lo tienes: pip install pyserial
 import time
-
-# Variable global para el puerto serial
-ser = None
-
-def inicializar_serial(puerto='COM3', baudrate=115200, reintentos=1):
-    """
-    Inicializa la conexión serial con el dispositivo.
-    
-    Args:
-        puerto (str): Puerto serial a utilizar.
-        baudrate (int): Velocidad de comunicación.
-        reintentos (int): Número de intentos de conexión.
-        
-    Returns:
-        bool: True si la conexión fue exitosa, False en caso contrario.
-    """
-    global ser
-    
-    # Si ya existe una conexión, la devolvemos
-    if ser is not None and ser.is_open:
-        return True
-        
-    # Intentar establecer la conexión
-    for intento in range(reintentos):
-        try:
-            ser = serial.Serial(puerto, baudrate, timeout=1)
-            print(f"Conexión serial establecida en {puerto} a {baudrate} baudios")
-            return True
-        except serial.SerialException as e:
-            print(f"Error al conectar al puerto {puerto}: {e}")
-            if intento < reintentos - 1:
-                print(f"Reintentando en 1 segundo ({intento+1}/{reintentos})...")
-                time.sleep(1)
-    
-    # Si llegamos aquí, no pudimos establecer la conexión
-    print(f"No se pudo establecer la conexión serial después de {reintentos} intentos")
-    ser = None
-    return False
+from core.serial_manager import serial_manager
+from config.settings import settings
 
 def inicializar_modelo(ruta_modelo='yolov8n.pt'):
     return YOLO(ruta_modelo)
@@ -88,22 +51,33 @@ def convertir_a_angulo(x_centro, frame_width):
     angulo = int((x_centro / frame_width) * 180)
     return angulo
 
-def enviar_angulo_a_esp32(angulo, puerto='COM3', baudrate=115200):
-    global ser
+def enviar_angulo_a_esp32(angulo):
+    """
+    Envía el ángulo al ESP32 utilizando el serial_manager.
     
-    try:
-        if ser is None or not ser.is_open:
-            # Intentar inicializar la conexión serial (un solo intento rápido)
-            if not inicializar_serial(puerto, baudrate, reintentos=1):
-                print(f"No se pudo enviar el ángulo {angulo} (sin conexión serial)")
-                return False
+    Args:
+        angulo (int): Ángulo a enviar (0-180).
         
-        ser.write(f'{angulo}\n'.encode())
-        print(f'Ángulo enviado: {angulo}')
-        return True
-    except Exception as e:
-        print(f"Error al enviar ángulo: {e}")
+    Returns:
+        bool: True si el comando se envió correctamente, False en caso contrario.
+    """
+    # Verificar si está habilitada la comunicación
+    if not settings.serial_enabled:
         return False
+    
+    # Verificar si hay conexión o intentar conectar con los parámetros de configuración
+    if not serial_manager.is_connected():
+        serial_manager.connect(
+            settings.serial_port, 
+            settings.serial_baudrate,
+            timeout=1.0,
+            retries=1
+        )
+    
+    # Enviar el ángulo
+    if serial_manager.is_connected():
+        return serial_manager.send_angle(angulo)
+    return False
 
 def convertir_a_comando(x_centro, frame_width):
     """

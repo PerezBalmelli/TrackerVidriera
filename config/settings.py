@@ -22,6 +22,11 @@ class Settings:
         # Configuración de seguimiento
         self.frames_espera = 10
         
+        # Configuración de comunicación serial
+        self.serial_port = "COM3"
+        self.serial_baudrate = 115200
+        self.serial_enabled = True
+        
         # Configuración de salida
         self.output_path = "salida.avi"
         self.output_format = "XVID"
@@ -41,6 +46,9 @@ class Settings:
             "frames_espera": self.frames_espera,
             "output_path": self.output_path,
             "output_format": self.output_format,
+            "serial_port": self.serial_port,
+            "serial_baudrate": self.serial_baudrate,
+            "serial_enabled": self.serial_enabled
         }
         
         try:
@@ -66,6 +74,9 @@ class Settings:
             self.frames_espera = config_data.get("frames_espera", self.frames_espera)
             self.output_path = config_data.get("output_path", self.output_path)
             self.output_format = config_data.get("output_format", self.output_format)
+            self.serial_port = config_data.get("serial_port", self.serial_port)
+            self.serial_baudrate = config_data.get("serial_baudrate", self.serial_baudrate)
+            self.serial_enabled = config_data.get("serial_enabled", self.serial_enabled)
             
             return True
         except Exception as e:
