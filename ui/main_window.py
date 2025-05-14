@@ -195,6 +195,7 @@ class MainWindow(QMainWindow):
         camera_layout.setContentsMargins(0, 0, 0, 0)
         
         self.camera_id_spin = QSpinBox()
+        self.camera_id_spin.valueChanged.connect(self.iniciar_previsualizacion_camara)
         self.camera_id_spin.setRange(0, 10)  # IDs de cámara comunes
         self.camera_id_spin.setValue(0)      # Cámara predeterminada
         self.camera_id_spin.setToolTip("ID de la cámara (0 = cámara predeterminada)")
