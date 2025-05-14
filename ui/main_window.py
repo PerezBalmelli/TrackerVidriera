@@ -19,6 +19,61 @@ import glob
 # Importamos módulos del proyecto
 from config.settings import settings
 from core.video_output import VideoOutputManager
+from PyQt6.QtCore import QThread, pyqtSignal
+import cv2
+
+class CameraThread(QThread):
+    frame_received = pyqtSignal(object)
+
+    def __init__(self, camera_id=0, parent=None):
+        super().__init__(parent)
+        self.camera_id = camera_id
+        self.running = False
+
+    def run(self):
+        self.cap = cv2.VideoCapture(self.camera_id)
+        if not self.cap.isOpened():
+            return
+
+        self.running = True
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                self.frame_received.emit(frame)
+            self.msleep(30)  # ~33fps
+
+        self.cap.release()
+
+    def stop(self):
+        self.running = False
+        self.wait()
+
+
+class CameraThread(QThread):
+    frame_received = pyqtSignal(object)
+
+    def __init__(self, camera_id=0, parent=None):
+        super().__init__(parent)
+        self.camera_id = camera_id
+        self.running = False
+
+    def run(self):
+        self.cap = cv2.VideoCapture(self.camera_id)
+        if not self.cap.isOpened():
+            return
+
+        self.running = True
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                self.frame_received.emit(frame)
+            self.msleep(30)  # ~33fps
+
+        self.cap.release()
+
+    def stop(self):
+        self.running = False
+        self.wait()
 
 
 class MainWindow(QMainWindow):
@@ -53,6 +108,8 @@ class MainWindow(QMainWindow):
         
         # Cargar configuraciones previas
         self.load_settings_to_ui()
+
+        self.procesando = False
     
     def init_ui(self):
         """Inicializa todos los componentes de la interfaz de usuario."""
@@ -99,6 +156,14 @@ class MainWindow(QMainWindow):
         
         # Establecer widget central
         self.setCentralWidget(central_widget)
+
+        # Panel derecho - Visualización de video
+        self.video_display = QLabel()
+        self.video_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_display.setMinimumSize(400, 300)
+        self.video_display.setStyleSheet("background-color: black;")
+
+        content_layout.addWidget(self.video_display, 2)  # Proporción 2
     
     def create_input_config_group(self, parent_layout):
         """Crea el grupo de configuración de entrada de video."""
@@ -252,6 +317,14 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(self.save_config_button)
         
         parent_layout.addLayout(buttons_layout)
+
+        # Botón de detener procesamiento
+        self.stop_button = QPushButton("Detener")
+        self.stop_button.setMinimumHeight(40)
+        self.stop_button.setEnabled(False)  # Inactivo al inicio
+        self.stop_button.clicked.connect(self.detener_procesamiento)
+
+        buttons_layout.addWidget(self.stop_button)
     
     def browse_video_file(self):
         """Abre un diálogo para seleccionar un archivo de video."""
@@ -357,54 +430,110 @@ class MainWindow(QMainWindow):
         index = self.codec_combo.findText(settings.output_format)
         if index >= 0:
             self.codec_combo.setCurrentIndex(index)
-    
+
     def process_video(self):
         """Procesa el video seleccionado utilizando la lógica de rastreo."""
         # Importar funciones de rastreo.py
         from rastreo import (
-            inicializar_modelo, detectar_personas, 
+            inicializar_modelo, detectar_personas,
             extraer_ids, actualizar_rastreo, dibujar_anotaciones
         )
         import cv2
-        
+
         # Obtener parámetros de configuración
         params = self._get_processing_parameters()
         if not params:
             return
-            
-        # Iniciar procesamiento
+
+        # Activar estado de procesamiento
+        self.procesando = True
+        self.stop_button.setEnabled(True)
+        self.process_button.setEnabled(False)
         self.status_bar.showMessage(f"Procesando video: {params['video_path']}...", 0)
-        
+
         try:
             # Inicializar el modelo
             model = inicializar_modelo(str(params['model_path']))
-            
+
             # Configurar video de entrada y salida
             cap, out, total_frames = self._setup_video_io(params)
             if not cap or not out:
+                self.procesando = False
+                self.stop_button.setEnabled(False)
+                self.process_button.setEnabled(True)
                 return
-                
-            # Realizar el procesamiento del video utilizando funciones de rastreo.py
+
+            # Realizar el procesamiento
             self._process_video_with_tracking(
-                model, cap, out, params['confidence'], 
+                model, cap, out, params['confidence'],
                 params['frames_espera'], total_frames,
-                detectar_personas, extraer_ids, 
+                detectar_personas, extraer_ids,
                 actualizar_rastreo, dibujar_anotaciones
             )
-            
+
             # Liberar recursos
             cap.release()
             out.release()
-            
-            self.status_bar.showMessage(
-                f"Video procesado correctamente. Guardado en: {params['output_path']}", 5000
-            )
-            
+
+            if self.procesando:
+                self.status_bar.showMessage(
+                    f"Video procesado correctamente. Guardado en: {params['output_path']}", 5000
+                )
+
         except Exception as e:
             self.status_bar.showMessage(f"Error durante el procesamiento: {str(e)}", 5000)
             import traceback
             traceback.print_exc()
-    
+
+        # Restaurar estado de botones
+        self.procesando = False
+        self.stop_button.setEnabled(False)
+        self.process_button.setEnabled(True)
+
+    def detener_procesamiento(self):
+        """Detiene el procesamiento del video."""
+        self.procesando = False
+        self.status_bar.showMessage("Procesamiento detenido por el usuario", 3000)
+
+    def detener_previsualizacion(self):
+        """Detiene el hilo de la cámara si está activo."""
+        if hasattr(self, 'camera_thread') and self.camera_thread.isRunning():
+            self.camera_thread.stop()
+            self.camera_thread = None
+        self.video_display.clear()
+
+        if hasattr(self, 'captura_preview') and self.captura_preview.isOpened():
+            self.captura_preview.release()
+            del self.captura_preview
+
+        # Limpiar imagen mostrada
+        self.video_display.clear()
+
+    def iniciar_previsualizacion_camara(self):
+        """Inicia un hilo para mostrar la cámara en vivo dentro de la GUI."""
+        camera_id = self.camera_id_spin.value()
+
+        # Evitar múltiples hilos activos
+        self.detener_previsualizacion()
+
+        self.camera_thread = CameraThread(camera_id)
+        self.camera_thread.frame_received.connect(self.mostrar_frame_en_label)
+        self.camera_thread.start()
+
+        def actualizar_previsualizacion(self):
+            """Actualiza el QLabel con la imagen de la cámara en tiempo real."""
+            ret, frame = self.captura_preview.read()
+            if ret:
+                self.mostrar_frame_en_label(frame)
+
+
+            if hasattr(self, 'captura_preview') and self.captura_preview.isOpened():
+                self.captura_preview.release()
+                del self.captura_preview
+
+            # Limpiar imagen mostrada
+            self.video_display.clear()
+
     def _get_processing_parameters(self):
         """Obtiene y valida los parámetros de procesamiento desde la UI."""
         model_name = self.model_path_combo.currentText()
@@ -543,7 +672,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Procesando archivo de video (sin control de servo)...", 0)
         
         # Procesar frame por frame
-        while True:
+        while self.procesando:
             ret, frame = cap.read()
             if not ret:
                 break
@@ -588,34 +717,36 @@ class MainWindow(QMainWindow):
             
             # Si es cámara en vivo, mostrar el resultado en tiempo real
             if is_live_camera:
-                cv2.imshow(window_name, annotated)
-                # Verificar si el usuario quiere detener el proceso (presionando 'q')
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        
+                self.mostrar_frame_en_label(annotated)
+                QApplication.processEvents()
         # Cerrar ventanas si estábamos en modo cámara en vivo
         if is_live_camera:
             cv2.destroyAllWindows()
-    
+
     def toggle_input_type(self, index):
         """Cambia entre los modos de entrada: archivo de video o cámara en vivo."""
         if index == 0:  # Archivo de video
             self.file_panel.setVisible(True)
             self.camera_panel.setVisible(False)
+            self.detener_previsualizacion()
+
             # Actualizar información del video si hay uno seleccionado
             if self.video_path_edit.text():
                 self.update_video_info(self.video_path_edit.text())
             else:
                 self.video_info_label.setText("No hay video seleccionado")
+
             # Habilitar el botón de procesar solo si hay un video seleccionado
             self.process_button.setEnabled(bool(self.video_path_edit.text()))
+            self.process_button.setText("Procesar video")
+
         else:  # Cámara en vivo
             self.file_panel.setVisible(False)
             self.camera_panel.setVisible(True)
             self.video_info_label.setText("Cámara: Sin información (usar 'Probar cámara')")
-            # Habilitar el botón de procesar ya que se puede usar la cámara directamente
             self.process_button.setEnabled(True)
             self.process_button.setText("Iniciar procesamiento en vivo")
+            self.iniciar_previsualizacion_camara()
 
     def test_camera(self):
         """Prueba la cámara seleccionada para verificar que funciona."""
@@ -769,3 +900,20 @@ class MainWindow(QMainWindow):
                 return True
                 
         return False
+
+    def mostrar_frame_en_label(self, frame):
+        """Convierte un frame de OpenCV a QPixmap y lo muestra en el QLabel."""
+        from PyQt6.QtGui import QImage, QPixmap
+        import cv2
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb_frame.shape
+        bytes_per_line = ch * w
+        qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg)
+        scaled_pixmap = pixmap.scaled(self.video_display.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.video_display.setPixmap(scaled_pixmap)
+
+
+
+
