@@ -751,7 +751,7 @@ class MainWindow(QMainWindow):
     
     def detect_available_cameras(self, max_cameras=10):
         """
-        Detecta las cámaras disponibles en el sistema.
+        Detecta las cámaras disponibles en el sistema de manera segura.
         
         Args:
             max_cameras (int): Número máximo de cámaras a comprobar.
@@ -760,24 +760,65 @@ class MainWindow(QMainWindow):
             list: Lista de tuplas (id, descripción) de las cámaras disponibles.
         """
         import cv2
+        import time
         
         self.available_cameras = []
+        self.status_bar.showMessage("Detectando cámaras (esto puede tardar unos segundos)...", 0)
         
-        # En sistemas Windows, las cámaras suelen estar en índices consecutivos
-        # empezando desde 0. Intentamos abrir cada índice.
-        for i in range(max_cameras):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                # La cámara está disponible
-                ret, frame = cap.read()
-                if ret:
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    description = f"Cámara {i}: {width}x{height}"
-                    self.available_cameras.append((i, description))
-                cap.release()
+        # Intentar suprimir los mensajes de error de OpenCV de forma compatible con cualquier versión
+        try:
+            # Intentar utilizar setLogLevel si está disponible
+            if hasattr(cv2, 'setLogLevel') and hasattr(cv2, 'LOG_LEVEL_SILENT'):
+                prev_log_level = cv2.getLogLevel()
+                cv2.setLogLevel(cv2.LOG_LEVEL_SILENT)
+        except Exception:
+            # Si no está disponible, simplemente continuamos
+            pass
         
-        self.status_bar.showMessage(f"Se encontraron {len(self.available_cameras)} cámaras", 3000)
+        try:
+            # En sistemas Windows, las cámaras suelen estar en índices consecutivos
+            # empezando desde 0. Intentamos abrir cada índice.
+            for i in range(max_cameras):
+                try:
+                    # Intentar usar CAP_DSHOW si está disponible (mejor en Windows)
+                    if hasattr(cv2, 'CAP_DSHOW'):
+                        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                    else:
+                        cap = cv2.VideoCapture(i)
+                    
+                    # Darle un poco de tiempo para inicializar
+                    time.sleep(0.1)
+                    
+                    if cap.isOpened():
+                        # La cámara está disponible
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            description = f"Cámara {i}: {width}x{height}"
+                            self.available_cameras.append((i, description))
+                        cap.release()
+                        time.sleep(0.1)  # Pequeña pausa entre cámaras
+                    
+                except Exception as e:
+                    # Ignorar errores individuales y continuar con la siguiente cámara
+                    pass
+        
+        finally:
+            # Restaurar nivel de log previo si fue cambiado
+            try:
+                if hasattr(cv2, 'setLogLevel') and hasattr(cv2, 'LOG_LEVEL_SILENT'):
+                    cv2.setLogLevel(prev_log_level)
+            except Exception:
+                pass
+        
+        if not self.available_cameras:
+            self.status_bar.showMessage("No se detectaron cámaras disponibles. Usando ID 0 por defecto.", 3000)
+            # Añadir una opción predeterminada de todas formas
+            self.available_cameras.append((0, "Cámara 0 (predeterminada)"))
+        else:
+            self.status_bar.showMessage(f"Se encontraron {len(self.available_cameras)} cámaras", 3000)
+            
         return self.available_cameras
     
     # Métodos de utilidad para manejo de extensiones de archivo
