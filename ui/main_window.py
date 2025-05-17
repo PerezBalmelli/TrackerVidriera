@@ -495,9 +495,28 @@ class MainWindow(QMainWindow):
         index = self.baudrate_combo.findText(str(settings.serial_baudrate))
         if index >= 0:
             self.baudrate_combo.setCurrentIndex(index)
-    
+
+    def reproducir_video_salida(self, path):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            self.status_bar.showMessage(f"No se pudo abrir el video procesado: {path}", 5000)
+            return
+
+        self.status_bar.showMessage("Mostrando video procesado...", 3000)
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            self.mostrar_frame_en_label(frame)
+            QApplication.processEvents()
+            time.sleep(1 / max(1, cap.get(cv2.CAP_PROP_FPS)))  # Evita división por cero
+
+        cap.release()
+        self.status_bar.showMessage("Visualización finalizada.", 3000)
+
     def process_video(self):
-        try: # Add try-except for rastreo import
+        try:  # Add try-except for rastreo import
             from rastreo import (
                 inicializar_modelo, detectar_personas,
                 extraer_ids, actualizar_rastreo, dibujar_anotaciones
@@ -507,7 +526,8 @@ class MainWindow(QMainWindow):
             return
 
         params = self._get_processing_parameters()
-        if not params: return
+        if not params:
+            return
 
         self.procesando = True
         self.stop_button.setEnabled(True)
@@ -517,23 +537,36 @@ class MainWindow(QMainWindow):
         try:
             model = inicializar_modelo(str(params['model_path']))
             cap, out, total_frames = self._setup_video_io(params)
-            if not cap or (not out and not params['is_camera']): # 'out' might be None if only previewing camera
-                 self.detener_procesamiento(); return
+            if not cap or (not out and not params['is_camera']):  # 'out' might be None if only previewing camera
+                self.detener_procesamiento()
+                return
 
-            self._process_video_with_tracking(model, cap, out, params,
-                detectar_personas, extraer_ids, actualizar_rastreo, dibujar_anotaciones, total_frames)
+            self._process_video_with_tracking(
+                model, cap, out, params,
+                detectar_personas, extraer_ids,
+                actualizar_rastreo, dibujar_anotaciones,
+                total_frames
+            )
 
-            if cap: cap.release()
-            if out: out.release()
+            if cap:
+                cap.release()
+            if out:
+                out.release()
 
-            if self.procesando: # If not stopped by user
-                output_msg = f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado."
-                self.status_bar.showMessage(output_msg, 5000)
+            if self.procesando:  # If not stopped by user
+                if not params['is_camera']:
+                    self.status_bar.showMessage(f"Procesado. Mostrando: {params['output_path']}", 3000)
+                    self.reproducir_video_salida(params['output_path'])
+                else:
+                    self.status_bar.showMessage("Procesamiento en vivo finalizado.", 5000)
+
         except Exception as e:
             self.status_bar.showMessage(f"Error en procesamiento: {str(e)}", 5000)
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
+
         finally:
-            self.detener_procesamiento() # Ensure state is reset
+            self.detener_procesamiento()  # Ensure state is reset
 
     def detener_procesamiento(self):
         self.procesando = False
@@ -644,50 +677,53 @@ class MainWindow(QMainWindow):
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
         frame_count = 0
-        controlar_servo = params['is_camera'] # Example: servo control only for live camera
+        controlar_servo = params['is_camera']  # Ejemplo: controlar servo solo para cámara en vivo
 
         while self.procesando:
             ret, frame = cap.read()
-            if not ret: break
+            if not ret:
+                break
 
             frame_count += 1
             if not params['is_camera'] and total_frames > 0:
                 progress = int((frame_count / total_frames) * 100)
                 self.status_bar.showMessage(f"Procesando: {progress}%", 0)
-            elif params['is_camera'] and frame_count % 30 == 0 :
-                 self.status_bar.showMessage(f"Frames procesados (en vivo): {frame_count}",0)
-
+            elif params['is_camera'] and frame_count % 30 == 0:
+                self.status_bar.showMessage(f"Frames procesados (en vivo): {frame_count}", 0)
 
             frame_width = frame.shape[1]
             result = detectar_personas(model, frame, params['confidence'])
             if result is None:
-                if params['is_camera']: self.mostrar_frame_en_label(frame) # Show raw frame
-                if out: out.write(frame) # Write raw frame if detection fails
+                self.mostrar_frame_en_label(frame)  # Mostrar frame original si no se detecta nada
+                if out:
+                    out.write(frame)
                 QApplication.processEvents()
                 continue
 
             boxes = result.boxes
             ids_esta_frame = extraer_ids(boxes)
+
             primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(
                 primer_id, rastreo_id, ids_esta_frame, frames_perdidos, params['frames_espera']
             )
-            if reiniciar_coords: ultima_coords = None
+            if reiniciar_coords:
+                ultima_coords = None
 
-            # Use result.plot() for default annotations from YOLO, then add custom
-            # annotated_frame = result.plot() # This already draws boxes and labels
-            # Pass the plotted frame for further custom annotations
+            # Anotar frame procesado
             annotated_frame, ultima_coords = dibujar_anotaciones(
                 result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
                 frame_width, controlar_servo=controlar_servo
             )
 
-            if out: out.write(annotated_frame)
-            if params['is_camera'] or self.input_type_combo.currentIndex() == 1: # Show preview if it's camera or if processing from camera
-                self.mostrar_frame_en_label(annotated_frame)
+            # Guardar salida si se desea
+            if out:
+                out.write(annotated_frame)
 
-            QApplication.processEvents() # Keep UI responsive
+            # Mostrar en interfaz (siempre, sea cámara o video)
+            self.mostrar_frame_en_label(annotated_frame)
+            QApplication.processEvents()
 
-        # Final cleanup in process_video or detener_procesamiento
+        # Limpieza final se maneja en process_video o detener_procesamiento
 
     def toggle_input_type(self, index):
         # Use helper methods to manage visibility of QFormLayout rows
