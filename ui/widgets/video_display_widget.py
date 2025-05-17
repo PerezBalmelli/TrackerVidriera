@@ -35,6 +35,7 @@ class VideoDisplayWidget(QWidget):
             return
 
         try:
+            # Convertir frame de BGR (OpenCV) a RGB (Qt)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb_frame.shape
             bytes_per_line = ch * w
