@@ -501,7 +501,7 @@ class MainWindow(QMainWindow):
         if not cap.isOpened():
             self.status_bar.showMessage(f"No se pudo abrir el video procesado: {path}", 5000)
             return
-
+        time.sleep(2) # espera para que termina de escribir el archivo de salida
         self.status_bar.showMessage("Mostrando video procesado...", 3000)
 
         while cap.isOpened():
