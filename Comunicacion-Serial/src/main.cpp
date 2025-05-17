@@ -297,6 +297,9 @@ void loop() {
     // Verifica que el ángulo sea válido antes de mover el servo
     if (angulo >= 0 && angulo <= 180) {
       myServo.write(angulo);
+      
+      currentPan = angulo;
+
       Serial.print("Ángulo movido a: ");
       Serial.println(angulo);
       // Actualizar estadisticas basicas
