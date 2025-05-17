@@ -1,7 +1,8 @@
 from ultralytics import YOLO
 import cv2
-import serial  # Necesitarás instalar pySerial si no lo tienes: pip install pyserial
-ser = serial.Serial('COM3', 115200, timeout=1)
+import time
+from core.serial_manager import serial_manager
+from config.settings import settings
 
 def inicializar_modelo(ruta_modelo='yolov8n.pt'):
     return YOLO(ruta_modelo)
@@ -14,8 +15,8 @@ def abrir_video(ruta_video):
     out = cv2.VideoWriter('salida.avi', cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
     return cap, out, frame_width, frame_height, fps
 
-def detectar_personas(modelo, frame):
-    resultados = modelo.track(frame, persist=True, conf=0.6, classes=[0])  # Solo clase 0: persona
+def detectar_personas(modelo, frame, confidence=0.6):
+    resultados = modelo.track(frame, persist=True, conf=confidence, classes=[0])  # Solo clase 0: persona
     return resultados[0]
 
 def extraer_ids(boxes):
@@ -50,9 +51,33 @@ def convertir_a_angulo(x_centro, frame_width):
     angulo = int((x_centro / frame_width) * 180)
     return angulo
 
-def enviar_angulo_a_esp32(angulo, puerto='COM3', baudrate=115200):
-    ser.write(f'{angulo}\n'.encode())
-    print(f'Ángulo enviado: {angulo}')
+def enviar_angulo_a_esp32(angulo):
+    """
+    Envía el ángulo al ESP32 utilizando el serial_manager.
+    
+    Args:
+        angulo (int): Ángulo a enviar (0-180).
+        
+    Returns:
+        bool: True si el comando se envió correctamente, False en caso contrario.
+    """
+    # Verificar si está habilitada la comunicación
+    if not settings.serial_enabled:
+        return False
+    
+    # Verificar si hay conexión o intentar conectar con los parámetros de configuración
+    if not serial_manager.is_connected():
+        serial_manager.connect(
+            settings.serial_port, 
+            settings.serial_baudrate,
+            timeout=1.0,
+            retries=1
+        )
+    
+    # Enviar el ángulo
+    if serial_manager.is_connected():
+        return serial_manager.send_angle(angulo)
+    return False
 
 def convertir_a_comando(x_centro, frame_width):
     """
@@ -73,7 +98,7 @@ def convertir_a_comando(x_centro, frame_width):
         # Persona hacia la derecha, mover hacia la derecha
         return int(90 + ((x_centro - frame_width // 2) / (frame_width // 2) * 45))
 
-def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width):
+def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width, controlar_servo=False):
     annotated = frame.copy()
     coordenadas_texto = ""
 
@@ -88,16 +113,15 @@ def dibujar_anotaciones(frame, boxes, rastreo_id, ultima_coords, ids_globales, f
                     ultima_coords = coords
                 x1, y1, x2, y2 = map(int, coords)
                 x_centro = (x1 + x2) // 2
-                comando = convertir_a_comando(x_centro, frame_width)  # Usamos la nueva función
-                enviar_angulo_a_esp32(comando)
+                
+                # Solo enviar comandos al servo si se ha habilitado
+                if controlar_servo:
+                    comando = convertir_a_comando(x_centro, frame_width)
+                    enviar_angulo_a_esp32(comando)
+                
                 cv2.putText(annotated, f"Rastreando ID: {id_}", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 coordenadas_texto = f"Coordenadas ID {id_}: ({x1}, {y1}), ({x2}, {y2})"
-    # else:
-    #     #Es para parar CR
-    #     print(f"Comando para servo: 90")
-    #     enviar_angulo_a_esp32(90)
-
 
     cv2.putText(annotated, f"Personas detectadas: {len(ids_globales)}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
@@ -136,7 +160,7 @@ def main():
             ultima_coords = None
 
         annotated_frame, ultima_coords = dibujar_anotaciones(
-            result.plot(), boxes, rastreo_id, ultima_coords, ids_globales, frame_width
+            result.plot(), boxes, rastreo_id, ultima_coords, ids_globales, frame_width, controlar_servo=True
         )
 
         cv2.imshow("Seguimiento", annotated_frame)
