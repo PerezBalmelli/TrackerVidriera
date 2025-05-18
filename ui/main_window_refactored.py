@@ -58,9 +58,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("TrackerVidriera")
         self.setMinimumSize(800, 600)
 
-        self.video_output = VideoOutputManager()
         self.procesando = False
         self.config_panel_width = 300  # Default width de config panel
+
+        self.video_output = VideoOutputManager()
 
         # Crear barra de estado
         self.status_bar = QStatusBar()
@@ -69,11 +70,14 @@ class MainWindow(QMainWindow):
 
         # Inicializar la interfaz
         self.init_ui()
+
+        # Ahora que la UI está construida, mostrar la ventana maximizada
+        self.showMaximized()
         
-        # Cargar configuración
+        # Cargar configuración en los widgets de la UI
         self.load_settings_to_ui()
         
-        # Configurar estado inicial
+        # Configurar estado inicial basado en los widgets de la UI
         self.toggle_input_type(self.input_widget.get_input_type())
 
     def init_ui(self):
