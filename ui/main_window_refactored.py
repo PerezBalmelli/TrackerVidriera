@@ -327,6 +327,15 @@ class MainWindow(QMainWindow):
                 if output_dir and not os.path.exists(output_dir):
                     os.makedirs(output_dir)
 
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception as e:
+                        self.show_status_message(f"No se pudo eliminar el archivo anterior: {e}", 3000)
+                        if cap:
+                            cap.release()
+                        return None, None, 0
+
                 out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
                 if not out.isOpened():
                     self.show_status_message("Error al crear archivo de salida. Intentando H264 para MP4...", 3000)
