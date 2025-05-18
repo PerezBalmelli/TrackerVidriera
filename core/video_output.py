@@ -5,20 +5,25 @@ Se encarga de inicializar, configurar y manejar la escritura de frames procesado
 import cv2
 import os
 from pathlib import Path
+from .tracking.video_output import VideoOutput
 
 
 class VideoOutputManager:
-    """Clase para gestionar la salida del video procesado."""
+    """Clase para gestionar la salida del video procesado.
+    Implementa el patrón Adapter para mantener compatibilidad con código existente
+    mientras utiliza la implementación refactorizada."""
     
     def __init__(self):
         """Inicializa el gestor de salida de video."""
+        self._output = VideoOutput()
+        
+        # Mantener variables para compatibilidad con código existente
         self.output_writer = None
         self.output_path = None
         self.codec = None
         self.fps = None
         self.width = None
         self.height = None
-        
     def setup_output(self, output_path, codec, fps, width, height):
         """
         Configura el escritor de video para la salida.
@@ -34,29 +39,22 @@ class VideoOutputManager:
             bool: True si la configuración fue exitosa, False en caso contrario.
         """
         try:
-            # Asegurarnos que el directorio de salida existe
-            output_dir = os.path.dirname(output_path)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+            # Usar la implementación refactorizada
+            success = self._output.setup(output_path, codec, fps, (width, height))
             
-            # Guardar configuración
-            self.output_path = output_path
-            self.codec = codec
-            self.fps = fps
-            self.width = width
-            self.height = height
-            
-            # Crear el objeto VideoWriter
-            fourcc = cv2.VideoWriter_fourcc(*codec)
-            self.output_writer = cv2.VideoWriter(
-                output_path, fourcc, fps, (width, height)
-            )
-            
-            return True
+            # Actualizar variables para compatibilidad
+            if success:
+                self.output_path = output_path
+                self.codec = codec
+                self.fps = fps
+                self.width = width
+                self.height = height
+                self.output_writer = self._output.output_writer
+                
+            return success
         except Exception as e:
             print(f"Error al configurar la salida de video: {e}")
             return False
-    
     def write_frame(self, frame):
         """
         Escribe un frame en el video de salida.
@@ -67,15 +65,7 @@ class VideoOutputManager:
         Returns:
             bool: True si el frame se escribió correctamente, False en caso contrario.
         """
-        if self.output_writer is None:
-            return False
-        
-        try:
-            self.output_writer.write(frame)
-            return True
-        except Exception as e:
-            print(f"Error al escribir frame: {e}")
-            return False
+        return self._output.write_frame(frame)
     
     def release(self):
         """
@@ -84,16 +74,10 @@ class VideoOutputManager:
         Returns:
             bool: True si se liberó correctamente, False en caso contrario.
         """
-        if self.output_writer is None:
-            return True
-        
-        try:
-            self.output_writer.release()
+        success = self._output.close()
+        if success:
             self.output_writer = None
-            return True
-        except Exception as e:
-            print(f"Error al liberar el escritor de video: {e}")
-            return False
+        return success
     
     def get_output_info(self):
         """
@@ -102,9 +86,4 @@ class VideoOutputManager:
         Returns:
             dict: Diccionario con la información de la salida.
         """
-        return {
-            "path": self.output_path,
-            "codec": self.codec,
-            "fps": self.fps,
-            "resolution": f"{self.width}x{self.height}"
-        }
+        return self._output.get_output_info()

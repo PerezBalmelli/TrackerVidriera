@@ -152,7 +152,6 @@ class SerialManager:
         """
         command = {'pan': pan, 'tilt': tilt}
         return self.send_json_command(command)
-    
     def send_angle(self, angle: int) -> bool:
         """
         Envía un comando simple con un ángulo al dispositivo.
@@ -164,13 +163,16 @@ class SerialManager:
             bool: True si el comando se envió correctamente, False en caso contrario.
         """
         if not self.is_connected():
+            print(f"[SerialManager] No se puede enviar ángulo {angle}° - No hay conexión activa")
             return False
         
         try:
-            self.connection.write(f'{angle}\n'.encode())
+            command = f'{angle}\n'
+            print(f"[SerialManager] Enviando al puerto {self.port}: '{angle}'")
+            self.connection.write(command.encode())
             return True
         except Exception as e:
-            print(f"Error al enviar ángulo: {e}")
+            print(f"[SerialManager] Error al enviar ángulo {angle}°: {e}")
             return False
 
 # Instancia global del gestor serial

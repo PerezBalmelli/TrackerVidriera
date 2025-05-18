@@ -34,6 +34,9 @@ class Settings:
         self.output_width = None  # Se ajustará según el video de entrada
         self.output_height = None  # Se ajustará según el video de entrada
         
+        # Configuración de UI
+        self.config_panel_collapsed = False
+        
         # Cargar configuraciones guardadas si existen
         self.load_settings()
     
@@ -48,7 +51,8 @@ class Settings:
             "output_format": self.output_format,
             "serial_port": self.serial_port,
             "serial_baudrate": self.serial_baudrate,
-            "serial_enabled": self.serial_enabled
+            "serial_enabled": self.serial_enabled,
+            "config_panel_collapsed": self.config_panel_collapsed
         }
         
         try:
@@ -77,6 +81,7 @@ class Settings:
             self.serial_port = config_data.get("serial_port", self.serial_port)
             self.serial_baudrate = config_data.get("serial_baudrate", self.serial_baudrate)
             self.serial_enabled = config_data.get("serial_enabled", self.serial_enabled)
+            self.config_panel_collapsed = config_data.get("config_panel_collapsed", self.config_panel_collapsed)
             
             return True
         except Exception as e:
