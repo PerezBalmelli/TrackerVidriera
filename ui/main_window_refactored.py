@@ -391,10 +391,11 @@ class MainWindow(QMainWindow):
                 frame_width, controlar_servo=controlar_servo
             )
 
+            if self.video_display:  # Mostrar el frame procesado
+                self.video_display.display_frame(annotated_frame)
+
             if out:
                 out.write(annotated_frame)
-            if params['is_camera'] or self.input_widget.get_input_type() == 1:
-                self.video_display.display_frame(annotated_frame)
 
             QApplication.processEvents()
 

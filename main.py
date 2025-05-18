@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 # Importamos nuestros módulos
-from ui.main_window import MainWindow
+from ui.main_window_refactored import MainWindow
 
 
 def main():
