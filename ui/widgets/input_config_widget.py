@@ -5,7 +5,14 @@ import os
 import time
 import sys
 import cv2
+import platform
 from pathlib import Path
+
+if platform.system() == "Windows":
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+    except ImportError:
+        pass
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
@@ -369,7 +376,39 @@ class InputConfigWidget(QWidget):
             self.second_camera_thread = None
     
     def detect_available_cameras(self, max_cameras=5):
-        """Detecta cámaras disponibles intentando abrirlas por índice."""
+        """Detecta cámaras disponibles intentando abrirlas por índice y obtiene nombres descriptivos en Windows."""
+        available_cameras = []
+        
+        # En Windows, usar pygrabber para obtener nombres descriptivos de cámaras
+        if platform.system() == "Windows":
+            try:
+                # Verificar si la biblioteca está disponible
+                graph = FilterGraph()
+                device_names = graph.get_input_devices()
+                
+                # Recorrer dispositivos para verificar que sean cámaras válidas
+                for i, name in enumerate(device_names):
+                    if i >= max_cameras:
+                        break
+                        
+                    cap = cv2.VideoCapture(i)
+                    if cap.isOpened():
+                        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                        cap.release()
+                        
+                        if width > 0 and height > 0:
+                            # Usar nombre descriptivo de la cámara
+                            available_cameras.append((i, name))
+                
+                # Si se encontraron cámaras con pygrabber, devolver la lista
+                if available_cameras:
+                    return available_cameras
+            except (ImportError, NameError, Exception) as e:
+                # Si hay algún error con pygrabber, usar el método estándar
+                print(f"No se pudo usar pygrabber para obtener nombres de cámaras: {e}")
+                
+        # Método estándar (respaldo o sistemas no Windows)
         available_cameras = []
         for i in range(max_cameras):
             cap = cv2.VideoCapture(i)
