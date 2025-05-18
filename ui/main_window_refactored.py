@@ -10,10 +10,10 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QStatusBar, QApplication
+    QLabel, QStatusBar, QApplication, QPushButton
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 
 from ui.widgets.input_config_widget import InputConfigWidget
 from ui.widgets.model_config_widget import ModelConfigWidget
@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self.video_output = VideoOutputManager()
         self.procesando = False
+        self.config_panel_width = 300  # Default width de config panel
 
         # Crear barra de estado
         self.status_bar = QStatusBar()
@@ -89,11 +90,11 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(header_layout)
 
         # Contenido principal (panel de config + visualización)
-        content_layout = QHBoxLayout()
+        self.content_layout = QHBoxLayout()
         
         # Panel izquierdo - Configuración
-        config_panel = QWidget()
-        config_layout = QVBoxLayout(config_panel)
+        self.config_panel = QWidget()
+        config_layout = QVBoxLayout(self.config_panel)
         config_layout.setSpacing(10)
         
         # Crear widgets de configuración
@@ -116,13 +117,17 @@ class MainWindow(QMainWindow):
         config_layout.addWidget(self.action_buttons)
         config_layout.addStretch()
         
-        content_layout.addWidget(config_panel, 1)
+        self.content_layout.addWidget(self.config_panel, 1)
         
         # Panel derecho - Visualización de video
-        content_layout.addWidget(self.video_display, 2)  # Proporción 2:1 para dar más espacio al video
+        self.content_layout.addWidget(self.video_display, 2)  # Proporción 2:1 para dar más espacio al video
         
-        main_layout.addLayout(content_layout)
+        main_layout.addLayout(self.content_layout)
         self.setCentralWidget(central_widget)
+        
+        # Configurar atajo de teclado para alternar panel (Ctrl+B)
+        shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
+        shortcut.activated.connect(self.toggle_config_panel)
     
     def connect_widget_signals(self):
         """Conecta las señales de los widgets."""
@@ -177,7 +182,29 @@ class MainWindow(QMainWindow):
         self.serial_widget.set_serial_port(settings.serial_port)
         self.serial_widget.set_baudrate(settings.serial_baudrate)
         self.serial_widget.set_serial_enabled(settings.serial_enabled)
+        
+        # Aplicar estado del panel guardado después de que la UI se haya inicializado completamente
+        QTimer.singleShot(100, self._apply_panel_state)
     
+    def _apply_panel_state(self):
+        """Aplica el estado guardado del panel de configuración."""
+        if not hasattr(self, 'config_panel_width') or self.config_panel_width <= 0:
+            if hasattr(self, 'config_panel') and self.config_panel.width() > 0:
+                self.config_panel_width = self.config_panel.width()
+            else:
+                self.config_panel_width = 300 # Fallback if panel not yet sized
+
+        if settings.config_panel_collapsed:
+            if self.config_panel.maximumWidth() > 0:
+                 self.collapse_config_panel()
+            else:
+                self.config_panel.setMaximumWidth(0)
+                if hasattr(self, 'expand_button'): # Show expand button if needed
+                    self.expand_button.show()
+        else:
+            if self.config_panel.maximumWidth() == 0:
+                self.expand_config_panel()
+
     def save_settings_from_ui(self):
         """Guarda la configuración actual."""
         settings.model_path = self.model_widget.get_model_path()
@@ -190,6 +217,10 @@ class MainWindow(QMainWindow):
         settings.serial_port = self.serial_widget.get_serial_port()
         settings.serial_baudrate = self.serial_widget.get_baudrate()
         settings.serial_enabled = self.serial_widget.is_serial_enabled()
+        
+        # Guardar estado del panel de configuración
+        if hasattr(self, 'config_panel'):
+            settings.config_panel_collapsed = self.config_panel.width() <= 50
         
         success = settings.save_settings()
         
@@ -213,6 +244,9 @@ class MainWindow(QMainWindow):
         if not params:
             return
 
+        # Colapsar el panel de configuración para dar más espacio al video
+        self.collapse_config_panel()
+
         self.procesando = True
         self.action_buttons.set_processing_mode(True, params['is_camera'])
         self.show_status_message(f"Procesando: {params['video_path_display']}...", 0)
@@ -220,7 +254,7 @@ class MainWindow(QMainWindow):
         try:
             model = inicializar_modelo(str(params['model_path']))
             cap, out, total_frames = self._setup_video_io(params)
-            if not cap or (not out and not params['is_camera']):
+            if not cap or (not out and not params['is_camera']):  # 'out' might be None if only previewing camera
                 self.detener_procesamiento()
                 return
 
@@ -232,7 +266,7 @@ class MainWindow(QMainWindow):
             if out:
                 out.release()
 
-            if self.procesando:
+            if self.procesando:  # If not stopped by user
                 output_msg = f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado."
                 self.show_status_message(output_msg, 5000)
         except Exception as e:
@@ -248,6 +282,10 @@ class MainWindow(QMainWindow):
             False, 
             self.input_widget.get_input_type() == 1
         )
+        
+        # Expandir el panel de configuración al detener el procesamiento
+        self.expand_config_panel()
+        
         self.show_status_message("Procesamiento detenido.", 3000)
 
     def _get_processing_parameters(self):
@@ -301,12 +339,13 @@ class MainWindow(QMainWindow):
         total_frames = 0
         try:
             if params['is_camera']:
+                # For live camera processing
                 cap = cv2.VideoCapture(params['video_path'])
                 if not cap.isOpened():
                     self.show_status_message(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
                     return None, None, 0
-                total_frames = -1
-            else:
+                total_frames = -1  # Live camera
+            else:  # File
                 cap = cv2.VideoCapture(params['video_path'])
                 if not cap.isOpened():
                     self.show_status_message(f"Error: No se pudo abrir video {params['video_path']}", 3000)
@@ -319,9 +358,11 @@ class MainWindow(QMainWindow):
             if fps <= 0:
                 fps = 30.0
 
+            # Setup output writer only if not just previewing camera
+            # If it's a camera and we want to save the processed output:
             if not params['is_camera'] or (params['is_camera'] and params['output_path']):
                 output_path = self.output_widget._ensure_valid_extension(params['output_path'], params['codec'])
-                params['output_path'] = output_path
+                params['output_path'] = output_path  # Update params
                 fourcc = cv2.VideoWriter_fourcc(*params['codec'])
                 output_dir = os.path.dirname(output_path)
                 if output_dir and not os.path.exists(output_dir):
@@ -354,7 +395,7 @@ class MainWindow(QMainWindow):
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
         frame_count = 0
-        controlar_servo = params['is_camera']
+        controlar_servo = params['is_camera']  # servo control solo para live camera
 
         while self.procesando:
             ret, frame = cap.read()
@@ -372,9 +413,9 @@ class MainWindow(QMainWindow):
             result = detectar_personas(model, frame, params['confidence'])
             if result is None:
                 if params['is_camera']:
-                    self.video_display.display_frame(frame)
+                    self.video_display.display_frame(frame)  # Show raw frame
                 if out:
-                    out.write(frame)
+                    out.write(frame)  # Write raw frame if detection fails
                 QApplication.processEvents()
                 continue
 
@@ -396,7 +437,74 @@ class MainWindow(QMainWindow):
             if params['is_camera'] or self.input_widget.get_input_type() == 1:
                 self.video_display.display_frame(annotated_frame)
 
-            QApplication.processEvents()
+            QApplication.processEvents()  # Mantener UI responsive
+
+    def toggle_config_panel(self):
+        """Alterna entre panel colapsado y expandido."""
+        if hasattr(self.config_panel, "width") and self.config_panel.width() > 50:  # Si está expandido
+            self.collapse_config_panel()
+            # Guardar estado en configuración
+            settings.config_panel_collapsed = True
+            settings.save_settings()
+        else:  # Si está colapsado
+            self.expand_config_panel()
+            # Guardar estado en configuración
+            settings.config_panel_collapsed = False
+            settings.save_settings()
+    
+    def collapse_config_panel(self):
+        """Colapsa el panel de configuración hacia la izquierda."""
+        # Guardar el ancho actual para poder restaurarlo después
+        self.config_panel_width = self.config_panel.width()
+        
+        # Crear una animación para colapsar suavemente
+        self.animation = QPropertyAnimation(self.config_panel, b"maximumWidth")
+        self.animation.setDuration(300)  # 300ms para la animación
+        self.animation.setStartValue(self.config_panel.width())
+        self.animation.setEndValue(0)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self.animation.start()
+        
+        # Crear un botón para expandir el panel
+        if not hasattr(self, 'expand_button'):
+            self.expand_button = QPushButton(">")
+            self.expand_button.setFixedSize(20, 60)
+            self.expand_button.clicked.connect(self.expand_config_panel)
+            self.expand_button.setToolTip("Expandir panel (Ctrl+B)")
+            self.expand_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #f0f0f0;
+                    border: 1px solid #ccc;
+                    border-left: none;
+                    border-top-right-radius: 10px;
+                    border-bottom-right-radius: 10px;
+                }
+                QPushButton:hover { background-color: #e0e0e0; }
+            """)
+            
+        # Añadir el botón al layout principal, alineado a la izquierda y centrado verticalmente
+        self.content_layout.insertWidget(0, self.expand_button, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.expand_button.show()
+
+    def expand_config_panel(self):
+        """Expande el panel de configuración."""
+        # Usar getattr para un acceso seguro a config_panel_width, default de 300
+        target_expanded_width = getattr(self, 'config_panel_width', 300)
+        if target_expanded_width <= 0:
+            target_expanded_width = 300
+
+        # Animar la expansión
+        self.animation = QPropertyAnimation(self.config_panel, b"maximumWidth")
+        self.animation.setDuration(300)
+        # Iniciar animacion desde el maximo ancho
+        self.animation.setStartValue(self.config_panel.maximumWidth())
+        self.animation.setEndValue(target_expanded_width)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self.animation.start()
+        
+        # Ocultar el botón de expansión
+        if hasattr(self, 'expand_button'):
+            self.expand_button.hide()
 
     def closeEvent(self, event):
         """Maneja el evento de cierre de la ventana."""
@@ -404,9 +512,14 @@ class MainWindow(QMainWindow):
         self.detener_procesamiento()
         super().closeEvent(event)
 
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    main_win = MainWindow()
-    main_win.show()
-    sys.exit(app.exec())
+    def resizeEvent(self, event):
+        """Maneja eventos de cambio de tamaño de la ventana."""
+        super().resizeEvent(event)
+        
+        # Si la ventana se hace demasiado estrecha, colapsar automáticamente el panel
+        if self.width() < 900 and not hasattr(self, 'auto_collapsed') and not self.procesando:
+            self.collapse_config_panel()
+            self.auto_collapsed = True
+        elif self.width() >= 900 and hasattr(self, 'auto_collapsed') and not self.procesando:
+            self.expand_config_panel()
+            delattr(self, 'auto_collapsed')
