@@ -149,6 +149,9 @@ class MainWindow(QMainWindow):
         self.input_widget.video_file_selected.connect(self.on_video_file_selected)
         self.input_widget.status_message.connect(self.show_status_message)
         self.input_widget.frame_received.connect(self.video_display.display_frame)
+        self.input_widget.second_frame_received.connect(self.video_display.display_second_frame) # Conectar nueva señal
+        self.input_widget.camera_selected.connect(self.on_main_camera_selected) # Para la cámara principal
+        self.input_widget.second_camera_selected.connect(self.on_second_camera_selected) # Para la segunda cámara
         
         # Model widget
         self.model_widget.status_message.connect(self.show_status_message)
@@ -175,6 +178,22 @@ class MainWindow(QMainWindow):
         """Maneja la selección de un archivo de video."""
         if file_path and self.input_widget.get_input_type() == 0:  # Si es tipo archivo
             self.action_buttons.enable_process_button(True)
+            self.video_display.display_second_frame(None) # Limpiar la segunda vista previa si se cambia a video
+
+    def on_main_camera_selected(self, camera_id, camera_description):
+        """Maneja la selección de la cámara principal."""
+        # Esta función podría usarse para lógica adicional si es necesario
+        # cuando se selecciona la cámara principal.
+        # Por ahora, la previsualización ya se maneja en InputConfigWidget.
+        self.show_status_message(f"Cámara principal seleccionada: {camera_description}", 2000)
+
+    def on_second_camera_selected(self, camera_id, camera_description):
+        """Maneja la selección de la segunda cámara."""
+        if camera_id != -1:
+            self.show_status_message(f"Segunda cámara seleccionada: {camera_description}", 2000)
+        else:
+            self.show_status_message("Segunda cámara deshabilitada.", 2000)
+            self.video_display.display_second_frame(None) # Limpiar la segunda vista previa
     
     def show_status_message(self, message, timeout=0):
         """Muestra un mensaje en la barra de estado."""
@@ -185,6 +204,14 @@ class MainWindow(QMainWindow):
         settings.load_settings()
         
         # Configurar widgets con la configuración cargada
+        # ... (Input widget settings - esto se hará a través de su propio método)
+        self.input_widget.set_all_settings({
+            "input_type": getattr(settings, 'input_type', 0), # Default a archivo si no existe
+            "video_path": getattr(settings, 'video_path', None),
+            "camera_id": getattr(settings, 'camera_id', 0),
+            "second_camera_id": getattr(settings, 'second_camera_id', -1) # Default a Ninguna
+        })
+
         self.model_widget.set_model_path(settings.model_path)
         self.model_widget.set_confidence(settings.confidence_threshold)
         self.model_widget.set_frames_wait(settings.frames_espera)
@@ -220,6 +247,12 @@ class MainWindow(QMainWindow):
 
     def save_settings_from_ui(self):
         """Guarda la configuración actual."""
+        input_settings = self.input_widget.get_all_settings()
+        settings.input_type = input_settings.get("input_type")
+        settings.video_path = input_settings.get("video_path")
+        settings.camera_id = input_settings.get("camera_id")
+        settings.second_camera_id = input_settings.get("second_camera_id")
+
         settings.model_path = self.model_widget.get_model_path()
         settings.confidence_threshold = self.model_widget.get_confidence()
         settings.frames_espera = self.model_widget.get_frames_wait()
@@ -258,7 +291,11 @@ class MainWindow(QMainWindow):
             return
 
         self.procesando = True
-        self.action_buttons.set_processing_mode(True, params['is_camera'])
+        # Determinar si es modo cámara basado en el tipo de entrada, no solo en params['is_camera']
+        # ya que params['is_camera'] podría ser verdadero para una sola cámara.
+        # Necesitamos saber si el *modo de entrada* es cámara.
+        is_live_camera_mode = self.input_widget.get_input_type() == 1
+        self.action_buttons.set_processing_mode(True, is_live_camera_mode)
 
         # Colapsar el panel de configuración para dar más espacio al video
         self.collapse_config_panel()
@@ -316,10 +353,16 @@ class MainWindow(QMainWindow):
 
         if is_camera:
             camera_id = self.input_widget.get_selected_camera_id()
-            if camera_id is None:
-                camera_id = 0
-            video_path = camera_id
+            second_camera_id = self.input_widget.get_selected_second_camera_id() # Obtener ID de segunda cámara
+            if camera_id is None: # Si la cámara principal no está seleccionada pero el modo es cámara
+                self.show_status_message("Error: Cámara principal no seleccionada.", 3000)
+                return None
+            video_path = camera_id # Para la cámara principal
             video_path_display = self.input_widget.get_selected_camera_description()
+            # Aquí podriamos decidir cómo manejar la segunda cámara en el procesamiento.
+            # Por ahora, el procesamiento principal se basa en 'video_path' (cámara principal).
+            # Si la segunda cámara es solo para visualización, no se necesita pasar a 'params' para el procesamiento.
+            # Si se va a procesar también, necesitarías modificar la lógica de procesamiento.
         else:
             video_path = self.input_widget.get_video_path()
             if not video_path:
@@ -343,7 +386,8 @@ class MainWindow(QMainWindow):
             'frames_espera': frames_espera,
             'output_path': output_path, 
             'codec': codec, 
-            'video_path_display': video_path_display
+            'video_path_display': video_path_display,
+            # Podrías añadir 'second_camera_id': second_camera_id si fuera necesario para el procesamiento
         }
 
     def _setup_video_io(self, params):
@@ -415,6 +459,12 @@ class MainWindow(QMainWindow):
                                     detectar_personas, extraer_ids,
                                     actualizar_rastreo, dibujar_anotaciones, total_frames):
         """Procesa el video frame por frame aplicando el tracking."""
+        # Nota: Esta función actualmente solo procesa una fuente de video (cap).
+        # Si se necesita procesar la segunda cámara simultáneamente (no solo mostrarla),
+        # esta lógica necesitaría una refactorización mayor para manejar dos bucles de captura
+        # o un sistema de threads más complejo para el procesamiento.
+        # Por ahora, la segunda cámara es solo para previsualización.
+
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
         frame_count = 0
@@ -436,7 +486,9 @@ class MainWindow(QMainWindow):
             result = detectar_personas(model, frame, params['confidence'])
             if result is None:
                 if params['is_camera']:
-                    self.video_display.display_frame(frame)  # Show raw frame
+                    self.video_display.display_frame(frame)  # Show raw frame for main camera
+                    # Aquí no se maneja el frame de la segunda cámara porque este bucle es para la principal.
+                    # La segunda cámara actualiza su propia vista previa a través de su CameraThread.
                 if out:
                     out.write(frame)  # Write raw frame if detection fails
                 QApplication.processEvents()
@@ -548,6 +600,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Maneja el evento de cierre de la ventana."""
         self.input_widget.detener_previsualizacion()
+        self.input_widget.detener_segunda_previsualizacion() # Detener también la segunda cámara
         self.detener_procesamiento()
         super().closeEvent(event)
 
