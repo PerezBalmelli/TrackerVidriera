@@ -91,6 +91,15 @@ class MainWindow(QMainWindow):
         title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+
+        # Boton rojo de stop (inicialmente oculto)
+        self.new_stop_button_main = QPushButton("Stop")
+        self.new_stop_button_main.setMinimumHeight(40)
+        self.new_stop_button_main.setStyleSheet("background-color: red; color: white;")
+        self.new_stop_button_main.clicked.connect(self.detener_procesamiento)
+        self.new_stop_button_main.hide()
+        header_layout.addWidget(self.new_stop_button_main)
+
         main_layout.addLayout(header_layout)
 
         # Contenido principal (panel de config + visualización)
@@ -248,11 +257,12 @@ class MainWindow(QMainWindow):
         if not params:
             return
 
+        self.procesando = True
+        self.action_buttons.set_processing_mode(True, params['is_camera'])
+
         # Colapsar el panel de configuración para dar más espacio al video
         self.collapse_config_panel()
 
-        self.procesando = True
-        self.action_buttons.set_processing_mode(True, params['is_camera'])
         self.show_status_message(f"Procesando: {params['video_path_display']}...", 0)
 
         try:
@@ -459,7 +469,8 @@ class MainWindow(QMainWindow):
     def collapse_config_panel(self):
         """Colapsa el panel de configuración hacia la izquierda."""
         # Guardar el ancho actual para poder restaurarlo después
-        self.config_panel_width = self.config_panel.width()
+        if self.config_panel.width() > 0 : 
+            self.config_panel_width = self.config_panel.width()
         
         # Crear una animación para colapsar suavemente
         self.animation = QPropertyAnimation(self.config_panel, b"maximumWidth")
@@ -467,6 +478,15 @@ class MainWindow(QMainWindow):
         self.animation.setStartValue(self.config_panel.width())
         self.animation.setEndValue(0)
         self.animation.setEasingCurve(QEasingCurve.Type.OutQuad)
+        
+        # Visibilidad de boton stop a partir de si se esta procesando o no
+        if self.procesando:
+            self.new_stop_button_main.show()
+            self.new_stop_button_main.setEnabled(True)
+        else:
+            self.new_stop_button_main.hide()
+            self.new_stop_button_main.setEnabled(False)
+            
         self.animation.start()
         
         # Crear un botón para expandir el panel
@@ -509,6 +529,11 @@ class MainWindow(QMainWindow):
         # Ocultar el botón de expansión
         if hasattr(self, 'expand_button'):
             self.expand_button.hide()
+        
+        # Esconder el boton cuando se expande el panel
+        if hasattr(self, 'new_stop_button_main'):
+            self.new_stop_button_main.hide()
+            self.new_stop_button_main.setEnabled(False)
 
     def closeEvent(self, event):
         """Maneja el evento de cierre de la ventana."""
