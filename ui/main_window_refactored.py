@@ -129,6 +129,13 @@ class MainWindow(QMainWindow):
         config_layout.addWidget(self.serial_widget)
         config_layout.addWidget(self.action_buttons)
         config_layout.addStretch()
+
+        self.manual_collapse_button = QPushButton("⇦")
+        self.manual_collapse_button.setFixedSize(30, 30)
+        self.manual_collapse_button.setToolTip("Colapsar panel")
+        self.manual_collapse_button.clicked.connect(self.collapse_config_panel)
+        # Añadirlo arriba del todo del panel izquierdo
+        config_layout.insertWidget(0, self.manual_collapse_button, alignment=Qt.AlignmentFlag.AlignRight)
         
         self.content_layout.addWidget(self.config_panel, 1)
         
