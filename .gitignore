@@ -6,7 +6,6 @@
 .venv
 
 # Modelos
-*.pt
 *.onnx
 
 # Videos
