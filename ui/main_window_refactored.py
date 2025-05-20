@@ -23,6 +23,7 @@ from ui.widgets.video_display_widget import VideoDisplayWidget
 from ui.widgets.action_buttons_widget import ActionButtonsWidget
 
 from core.serial_manager import serial_manager
+from core.person_tracking_manager import PersonTrackingManager
 
 try:
     from config.settings import settings
@@ -62,6 +63,7 @@ class MainWindow(QMainWindow):
         self.config_panel_width = 300  # Default width de config panel
 
         self.video_output = VideoOutputManager()
+        self.person_tracker = PersonTrackingManager()  # Instancia para tracking y servo
 
         # Crear barra de estado
         self.status_bar = QStatusBar()
@@ -283,48 +285,36 @@ class MainWindow(QMainWindow):
             self.show_status_message("Error al guardar configuración.", 3000)
 
     def process_video(self):
-        """Inicia el procesamiento del video o la cámara."""
-        try:
-            from rastreo import (
-                inicializar_modelo, detectar_personas,
-                extraer_ids, actualizar_rastreo, dibujar_anotaciones
-            )
-        except ImportError:
-            self.show_status_message("Error: Módulo 'rastreo.py' no encontrado.", 5000)
-            return
-
+        """Inicia el procesamiento del video o la cámara usando PersonTrackingManager."""
         params = self._get_processing_parameters()
         if not params:
             return
 
         self.procesando = True
-        # Determinar si es modo cámara basado en el tipo de entrada, no solo en params['is_camera']
-        # ya que params['is_camera'] podría ser verdadero para una sola cámara.
-        # Necesitamos saber si el *modo de entrada* es cámara.
         is_live_camera_mode = self.input_widget.get_input_type() == 1
         self.action_buttons.set_processing_mode(True, is_live_camera_mode)
-
-        # Colapsar el panel de configuración para dar más espacio al video
         self.collapse_config_panel()
-
         self.show_status_message(f"Procesando: {params['video_path_display']}...", 0)
 
         try:
-            model = inicializar_modelo(str(params['model_path']))
+            # Inicializar modelo y parámetros en el manager
+            self.person_tracker.inicializar_modelo(str(params['model_path']))
+            self.person_tracker.detector.set_confidence(params['confidence'])
+            self.person_tracker.tracker.set_frames_espera(params['frames_espera'])
+
             cap, out, total_frames = self._setup_video_io(params)
-            if not cap or (not out and not params['is_camera']):  # 'out' might be None if only previewing camera
+            if not cap or (not out and not params['is_camera']):
                 self.detener_procesamiento()
                 return
 
-            self._process_video_with_tracking(model, cap, out, params,
-                detectar_personas, extraer_ids, actualizar_rastreo, dibujar_anotaciones, total_frames)
+            self._process_video_with_tracking(cap, out, params, total_frames)
 
             if cap:
                 cap.release()
             if out:
                 out.release()
 
-            if self.procesando:  # If not stopped by user
+            if self.procesando:
                 output_msg = f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado."
                 self.show_status_message(output_msg, 5000)
         except Exception as e:
@@ -340,10 +330,8 @@ class MainWindow(QMainWindow):
             False, 
             self.input_widget.get_input_type() == 1
         )
-        
         # Expandir el panel de configuración al detener el procesamiento
         self.expand_config_panel()
-        
         self.show_status_message("Procesamiento detenido.", 3000)
 
     def _get_processing_parameters(self):
@@ -351,25 +339,19 @@ class MainWindow(QMainWindow):
         model_name = self.model_widget.get_model_path()
         confidence = self.model_widget.get_confidence()
         frames_espera = self.model_widget.get_frames_wait()
-        
         output_path = self.output_widget.get_output_path()
         codec = self.output_widget.get_codec()
-        
         is_camera = self.input_widget.get_input_type() == 1
         video_path_display = "Cámara en vivo"
 
         if is_camera:
             camera_id = self.input_widget.get_selected_camera_id()
-            second_camera_id = self.input_widget.get_selected_second_camera_id() # Obtener ID de segunda cámara
-            if camera_id is None: # Si la cámara principal no está seleccionada pero el modo es cámara
+            second_camera_id = self.input_widget.get_selected_second_camera_id()
+            if camera_id is None:
                 self.show_status_message("Error: Cámara principal no seleccionada.", 3000)
                 return None
-            video_path = camera_id # Para la cámara principal
+            video_path = camera_id
             video_path_display = self.input_widget.get_selected_camera_description()
-            # Aquí podriamos decidir cómo manejar la segunda cámara en el procesamiento.
-            # Por ahora, el procesamiento principal se basa en 'video_path' (cámara principal).
-            # Si la segunda cámara es solo para visualización, no se necesita pasar a 'params' para el procesamiento.
-            # Si se va a procesar también, necesitarías modificar la lógica de procesamiento.
         else:
             video_path = self.input_widget.get_video_path()
             if not video_path:
@@ -394,7 +376,6 @@ class MainWindow(QMainWindow):
             'output_path': output_path, 
             'codec': codec, 
             'video_path_display': video_path_display,
-            # Podrías añadir 'second_camera_id': second_camera_id si fuera necesario para el procesamiento
         }
 
     def _setup_video_io(self, params):
@@ -404,13 +385,12 @@ class MainWindow(QMainWindow):
         total_frames = 0
         try:
             if params['is_camera']:
-                # For live camera processing
                 cap = cv2.VideoCapture(params['video_path'])
                 if not cap.isOpened():
                     self.show_status_message(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
                     return None, None, 0
                 total_frames = -1  # Live camera
-            else:  # File
+            else:
                 cap = cv2.VideoCapture(params['video_path'])
                 if not cap.isOpened():
                     self.show_status_message(f"Error: No se pudo abrir video {params['video_path']}", 3000)
@@ -423,16 +403,13 @@ class MainWindow(QMainWindow):
             if fps <= 0:
                 fps = 30.0
 
-            # Setup output writer only if not just previewing camera
-            # If it's a camera and we want to save the processed output:
             if not params['is_camera'] or (params['is_camera'] and params['output_path']):
                 output_path = self.output_widget._ensure_valid_extension(params['output_path'], params['codec'])
-                params['output_path'] = output_path  # Update params
+                params['output_path'] = output_path
                 fourcc = cv2.VideoWriter_fourcc(*params['codec'])
                 output_dir = os.path.dirname(output_path)
                 if output_dir and not os.path.exists(output_dir):
                     os.makedirs(output_dir)
-
                 if os.path.exists(output_path):
                     try:
                         os.remove(output_path)
@@ -441,7 +418,6 @@ class MainWindow(QMainWindow):
                         if cap:
                             cap.release()
                         return None, None, 0
-
                 out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
                 if not out.isOpened():
                     self.show_status_message("Error al crear archivo de salida. Intentando H264 para MP4...", 3000)
@@ -462,20 +438,12 @@ class MainWindow(QMainWindow):
                 out.release()
             return None, None, 0
 
-    def _process_video_with_tracking(self, model, cap, out, params,
-                                    detectar_personas, extraer_ids,
-                                    actualizar_rastreo, dibujar_anotaciones, total_frames):
-        """Procesa el video frame por frame aplicando el tracking."""
-        # Nota: Esta función actualmente solo procesa una fuente de video (cap).
-        # Si se necesita procesar la segunda cámara simultáneamente (no solo mostrarla),
-        # esta lógica necesitaría una refactorización mayor para manejar dos bucles de captura
-        # o un sistema de threads más complejo para el procesamiento.
-        # Por ahora, la segunda cámara es solo para previsualización.
-
+    def _process_video_with_tracking(self, cap, out, params, total_frames):
+        """Procesa el video frame por frame aplicando el tracking usando PersonTrackingManager."""
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
         frame_count = 0
-        controlar_servo = params['is_camera']  # servo control solo para live camera
+        controlar_servo = params['is_camera'] and self.serial_widget.is_serial_enabled()  # Solo si es cámara y está activo
 
         while self.procesando:
             ret, frame = cap.read()
@@ -490,37 +458,33 @@ class MainWindow(QMainWindow):
                 self.show_status_message(f"Frames procesados (en vivo): {frame_count}", 0)
 
             frame_width = frame.shape[1]
-            result = detectar_personas(model, frame, params['confidence'])
+            result = self.person_tracker.detectar_personas(frame, params['confidence'])
             if result is None:
                 if params['is_camera']:
-                    self.video_display.display_frame(frame)  # Show raw frame for main camera
-                    # Aquí no se maneja el frame de la segunda cámara porque este bucle es para la principal.
-                    # La segunda cámara actualiza su propia vista previa a través de su CameraThread.
+                    self.video_display.display_frame(frame)
                 if out:
-                    out.write(frame)  # Write raw frame if detection fails
+                    out.write(frame)
                 QApplication.processEvents()
                 continue
 
             boxes = result.boxes
-            ids_esta_frame = extraer_ids(boxes)
-            primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(
+            ids_esta_frame = self.person_tracker.extraer_ids(boxes)
+            primer_id, rastreo_id, reiniciar_coords, frames_perdidos = self.person_tracker.actualizar_rastreo(
                 primer_id, rastreo_id, ids_esta_frame, frames_perdidos, params['frames_espera']
             )
             if reiniciar_coords:
                 ultima_coords = None
 
-            annotated_frame, ultima_coords = dibujar_anotaciones(
+            annotated_frame, ultima_coords = self.person_tracker.dibujar_anotaciones(
                 result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
                 frame_width, controlar_servo=controlar_servo
             )
 
-            if self.video_display:  # Mostrar el frame procesado
+            if self.video_display:
                 self.video_display.display_frame(annotated_frame)
-
             if out:
                 out.write(annotated_frame)
-
-            QApplication.processEvents()  # Mantener UI responsive
+            QApplication.processEvents()
 
     def toggle_config_panel(self):
         """Alterna entre panel colapsado y expandido."""
