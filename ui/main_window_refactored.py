@@ -10,14 +10,15 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QStatusBar, QApplication, QPushButton
+    QLabel, QStatusBar, QApplication, QPushButton, QSizePolicy
+    # QScrollArea ya no es necesario
 )
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, QStandardPaths
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 
 from ui.widgets.input_config_widget import InputConfigWidget
 from ui.widgets.model_config_widget import ModelConfigWidget
-from ui.widgets.output_config_widget import OutputConfigWidget
+from ui.widgets.output_config_widget import OutputConfigWidget # Importa el modificado
 from ui.widgets.serial_config_widget import SerialConfigWidget
 from ui.widgets.video_display_widget import VideoDisplayWidget
 from ui.widgets.action_buttons_widget import ActionButtonsWidget
@@ -25,593 +26,480 @@ from ui.widgets.action_buttons_widget import ActionButtonsWidget
 from core.serial_manager import serial_manager
 
 try:
+    from core.tracking.video_output import VideoOutput
+except ImportError:
+    print("ADVERTENCIA: No se pudo importar 'VideoOutput' desde 'core.tracking.video_output'. La grabación de la segunda cámara NO funcionará.")
+    class VideoOutput:
+        def __init__(self): self.output_writer = None; self._output_path = "dummy_output.avi"; print("[DummyVO] Instancia creada.")
+        def setup(self,p,c,f,s): print(f"[DummyVO] Setup: {p}");self._output_path=p;self.output_writer=True;return True
+        def write_frame(self,fr): return True
+        def close(self): print(f"[DummyVO] Close: {self._output_path}");self.output_writer=None;return True
+        def get_output_info(self): return {"output_path":self._output_path}
+
+try:
     from config.settings import settings
     from core.video_output import VideoOutputManager
 except ImportError:
-    print("Warning: Could not import 'settings' or 'VideoOutputManager'. Ensure they are in the correct path.")
-
+    print("Warning: Could not import 'settings' or 'VideoOutputManager'.")
     class DummySettings:
         def __init__(self):
-            self.model_path = "yolov8n.pt"
-            self.confidence_threshold = 0.6
-            self.frames_espera = 10
-            self.output_path = "salida.avi"
-            self.output_format = "XVID"
-            self.serial_port = "COM3"
-            self.serial_baudrate = 115200
-            self.serial_enabled = True
+            self.model_path="yolov8n.pt"; self.confidence_threshold=0.6; self.frames_espera=10
+            self.output_path= str(Path.cwd() / "salida_procesada.avi")
+            self.output_format="XVID"
+            # Default para segunda cámara: Directorio actual
+            self.second_camera_output_path=str(Path.cwd() / "salida_cam2_crudo.avi")
+            self.second_camera_output_format="XVID"
+            self.serial_port="COM3"; self.serial_baudrate=115200; self.serial_enabled=True
+            self.input_type=0; self.video_path=None; self.camera_id=0
+            self.second_camera_id=-1; self.config_panel_collapsed=False
         def save_settings(self): return True
         def load_settings(self): pass
     settings = DummySettings()
 
     class DummyVideoOutputManager:
-        pass
+        def setup_output(self, *args): return True
+        def write_frame(self, *args): return True
+        def release(self, *args): return True
+        def get_output_info(self, *args): return {}
     VideoOutputManager = DummyVideoOutputManager
 
 
 class MainWindow(QMainWindow):
-    """Ventana principal de la aplicación TrackerVidriera."""
-
     def __init__(self):
         super().__init__()
-
         self.setWindowTitle("TrackerVidriera")
         self.setMinimumSize(800, 600)
-
         self.procesando = False
-        self.config_panel_width = 300  # Default width de config panel
-
+        self.left_panel_target_width = 350 # Ancho para el panel izquierdo cuando está expandido
         self.video_output = VideoOutputManager()
-
-        # Crear barra de estado
+        self.second_camera_raw_recorder = None
+        self.is_recording_second_camera = False
+        self._second_camera_frame_props = {}
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Listo")
-
-        # Inicializar la interfaz
         self.init_ui()
-
-        # Ahora que la UI está construida, mostrar la ventana maximizada
         self.showMaximized()
-        
-        # Cargar configuración en los widgets de la UI
         self.load_settings_to_ui()
-        
-        # Configurar estado inicial basado en los widgets de la UI
-        self.toggle_input_type(self.input_widget.get_input_type())
+        QTimer.singleShot(0, lambda: self.toggle_input_type(self.input_widget.get_input_type()))
+        self._update_main_processing_buttons_state()
 
     def init_ui(self):
-        """Inicializa la interfaz de usuario."""
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
-
-        # Encabezado
         header_layout = QHBoxLayout()
         title_label = QLabel("TrackerVidriera")
         title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
-
-        # Boton rojo de stop (inicialmente oculto)
+        header_layout.addWidget(title_label); header_layout.addStretch()
         self.new_stop_button_main = QPushButton("Stop")
-        self.new_stop_button_main.setMinimumHeight(40)
-        self.new_stop_button_main.setStyleSheet("background-color: red; color: white;")
-        self.new_stop_button_main.clicked.connect(self.detener_procesamiento)
-        self.new_stop_button_main.hide()
-        header_layout.addWidget(self.new_stop_button_main)
+        self.new_stop_button_main.setMinimumHeight(40); self.new_stop_button_main.setStyleSheet("background-color: red; color: white;")
+        self.new_stop_button_main.clicked.connect(self.detener_procesamiento); self.new_stop_button_main.hide()
+        header_layout.addWidget(self.new_stop_button_main); main_layout.addLayout(header_layout)
 
-        main_layout.addLayout(header_layout)
-
-        # Contenido principal (panel de config + visualización)
         self.content_layout = QHBoxLayout()
-        
-        # Panel izquierdo - Configuración
-        self.config_panel = QWidget()
-        config_layout = QVBoxLayout(self.config_panel)
-        config_layout.setSpacing(10)
-        
-        # Crear widgets de configuración
+
+        # Panel Izquierdo (Contenedor para widgets de config y Botones de Acción)
+        self.left_panel_widget = QWidget()
+        self.left_panel_layout = QVBoxLayout(self.left_panel_widget)
+        self.left_panel_layout.setContentsMargins(5,5,5,5)
+        self.left_panel_layout.setSpacing(10)
+
+        # Contenedor para los widgets de configuración (sin QScrollArea)
+        config_widgets_container = QWidget()
+        config_layout_inside = QVBoxLayout(config_widgets_container)
+        config_layout_inside.setSpacing(10)
+        config_layout_inside.setContentsMargins(0,0,0,0)
+
         self.input_widget = InputConfigWidget()
         self.model_widget = ModelConfigWidget()
         self.output_widget = OutputConfigWidget()
         self.serial_widget = SerialConfigWidget(serial_manager)
+
+        config_layout_inside.addWidget(self.input_widget)
+        config_layout_inside.addWidget(self.model_widget)
+        config_layout_inside.addWidget(self.output_widget)
+        config_layout_inside.addWidget(self.serial_widget)
+        # config_layout_inside.addStretch(1) # Quitar stretch para que los widgets tomen su altura natural
+
+        # Botones de Acción
         self.action_buttons = ActionButtonsWidget()
-        
+
+        # Añadir el contenedor de widgets de config y luego los botones de acción
+        self.left_panel_layout.addWidget(config_widgets_container)
+        self.left_panel_layout.addStretch(1) # Empuja los botones de acción hacia abajo
+        self.left_panel_layout.addWidget(self.action_buttons)
+
         self.video_display = VideoDisplayWidget()
 
-        # Conectar señales
         self.connect_widget_signals()
-        
-        # Añadir widgets al panel de configuración
-        config_layout.addWidget(self.input_widget)
-        config_layout.addWidget(self.model_widget)
-        config_layout.addWidget(self.output_widget)
-        config_layout.addWidget(self.serial_widget)
-        config_layout.addWidget(self.action_buttons)
-        config_layout.addStretch()
-        
-        self.content_layout.addWidget(self.config_panel, 1)
-        
-        # Panel derecho - Visualización de video
-        self.content_layout.addWidget(self.video_display, 2)  # Proporción 2:1 para dar más espacio al video
-        
+
+        # El panel izquierdo ahora no usa QScrollArea, su tamaño es manejado por su contenido
+        # y la animación de colapso/expansión.
+        # La proporción 0 para el panel izquierdo en el QHBoxLayout significa que tomará su hint de tamaño,
+        # y el video_display (proporción 1) tomará el resto del espacio.
+        self.content_layout.addWidget(self.left_panel_widget, 0)
+        self.content_layout.addWidget(self.video_display, 1)
+
+        self.left_panel_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+
         main_layout.addLayout(self.content_layout)
         self.setCentralWidget(central_widget)
-        
-        # Configurar atajo de teclado para alternar panel (Ctrl+B)
+
         shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         shortcut.activated.connect(self.toggle_config_panel)
-    
+
     def connect_widget_signals(self):
-        """Conecta las señales de los widgets."""
-        # Input widget
         self.input_widget.input_type_changed.connect(self.toggle_input_type)
         self.input_widget.video_file_selected.connect(self.on_video_file_selected)
         self.input_widget.status_message.connect(self.show_status_message)
         self.input_widget.frame_received.connect(self.video_display.display_frame)
-        self.input_widget.second_frame_received.connect(self.video_display.display_second_frame) # Conectar nueva señal
-        self.input_widget.camera_selected.connect(self.on_main_camera_selected) # Para la cámara principal
-        self.input_widget.second_camera_selected.connect(self.on_second_camera_selected) # Para la segunda cámara
-        
-        # Model widget
+        self.input_widget.second_frame_received.connect(self.video_display.display_second_frame)
+        self.input_widget.second_frame_received.connect(self._handle_second_camera_frame_for_recording)
+        self.input_widget.camera_selected.connect(self.on_main_camera_selected)
+        self.input_widget.second_camera_selected.connect(self.on_second_camera_selected)
         self.model_widget.status_message.connect(self.show_status_message)
-        
-        # Serial widget
         self.serial_widget.status_message.connect(self.show_status_message)
-        
-        # Action buttons
         self.action_buttons.process_clicked.connect(self.process_video)
         self.action_buttons.stop_clicked.connect(self.detener_procesamiento)
         self.action_buttons.save_config_clicked.connect(self.save_settings_from_ui)
-    
+
+    def _update_main_processing_buttons_state(self):
+        is_live_mode = self.input_widget.get_input_type() == 1
+        self.action_buttons.set_processing_mode(self.procesando, is_live_mode)
+        if not self.procesando:
+            if is_live_mode:
+                main_cam_id = self.input_widget.get_selected_camera_id()
+                self.action_buttons.enable_process_button(enabled=(main_cam_id is not None), text="Procesar en vivo")
+            else:
+                self.action_buttons.enable_process_button(enabled=bool(self.input_widget.get_video_path()), text="Procesar video")
+
     def toggle_input_type(self, index):
-        """Ajusta la UI según el tipo de entrada seleccionado."""
-        if index == 0:  # Archivo de video
-            self.action_buttons.enable_process_button(
-                enabled=bool(self.input_widget.get_video_path()),
-                text="Procesar video"
-            )
-        else:  # Cámara en vivo
-            self.action_buttons.enable_process_button(True, "Procesar en vivo")
-    
+        self._update_main_processing_buttons_state()
+        if self.is_recording_second_camera: self._stop_record_second_camera()
+        is_camera_mode = (index == 1)
+        if hasattr(self, 'output_widget'):
+             self.output_widget.set_second_camera_output_visible(is_camera_mode)
+
     def on_video_file_selected(self, file_path):
-        """Maneja la selección de un archivo de video."""
-        if file_path and self.input_widget.get_input_type() == 0:  # Si es tipo archivo
-            self.action_buttons.enable_process_button(True)
-            self.video_display.display_second_frame(None) # Limpiar la segunda vista previa si se cambia a video
+        self._update_main_processing_buttons_state()
+        self.video_display.display_second_frame(None)
 
     def on_main_camera_selected(self, camera_id, camera_description):
-        """Maneja la selección de la cámara principal."""
-        # Esta función podría usarse para lógica adicional si es necesario
-        # cuando se selecciona la cámara principal.
-        # Por ahora, la previsualización ya se maneja en InputConfigWidget.
         self.show_status_message(f"Cámara principal seleccionada: {camera_description}", 2000)
+        self._update_main_processing_buttons_state()
 
     def on_second_camera_selected(self, camera_id, camera_description):
-        """Maneja la selección de la segunda cámara."""
-        if camera_id != -1:
-            self.show_status_message(f"Segunda cámara seleccionada: {camera_description}", 2000)
+        if camera_id != -1: self.show_status_message(f"Segunda cámara seleccionada: {camera_description}", 2000)
         else:
             self.show_status_message("Segunda cámara deshabilitada.", 2000)
-            self.video_display.display_second_frame(None) # Limpiar la segunda vista previa
-    
+            self.video_display.display_second_frame(None)
+            if self.is_recording_second_camera: self._stop_record_second_camera()
+        self._update_main_processing_buttons_state()
+
     def show_status_message(self, message, timeout=0):
-        """Muestra un mensaje en la barra de estado."""
         self.status_bar.showMessage(message, timeout)
-    
+
     def load_settings_to_ui(self):
-        """Carga la configuración guardada en la interfaz."""
         settings.load_settings()
-        
-        # Configurar widgets con la configuración cargada
-        # ... (Input widget settings - esto se hará a través de su propio método)
         self.input_widget.set_all_settings({
-            "input_type": getattr(settings, 'input_type', 0), # Default a archivo si no existe
-            "video_path": getattr(settings, 'video_path', None),
-            "camera_id": getattr(settings, 'camera_id', 0),
-            "second_camera_id": getattr(settings, 'second_camera_id', -1) # Default a Ninguna
-        })
+            "input_type": getattr(settings, 'input_type', 0), "video_path": getattr(settings, 'video_path', None),
+            "camera_id": getattr(settings, 'camera_id', 0), "second_camera_id": getattr(settings, 'second_camera_id', -1)})
+        self.model_widget.set_model_path(getattr(settings, 'model_path', "yolov8n.pt"))
+        self.model_widget.set_confidence(getattr(settings, 'confidence_threshold', 0.6))
+        self.model_widget.set_frames_wait(getattr(settings, 'frames_espera', 10))
 
-        self.model_widget.set_model_path(settings.model_path)
-        self.model_widget.set_confidence(settings.confidence_threshold)
-        self.model_widget.set_frames_wait(settings.frames_espera)
-        
-        self.output_widget.set_output_path(settings.output_path)
-        self.output_widget.set_codec(settings.output_format)
-        
-        self.serial_widget.set_serial_port(settings.serial_port)
-        self.serial_widget.set_baudrate(settings.serial_baudrate)
-        self.serial_widget.set_serial_enabled(settings.serial_enabled)
-        
-        # Aplicar estado del panel guardado después de que la UI se haya inicializado completamente
+        self.output_widget.set_output_path(getattr(settings, 'output_path', str(Path.cwd() / "salida_procesada.avi")))
+        self.output_widget.set_codec(getattr(settings, 'output_format', "XVID"))
+
+        default_sec_cam_path = str(Path.cwd() / "salida_cam2_crudo.avi")
+        self.output_widget.set_second_cam_output_path(getattr(settings, 'second_camera_output_path', default_sec_cam_path))
+        self.output_widget.set_second_cam_codec(getattr(settings, 'second_camera_output_format', "XVID"))
+
+        self.serial_widget.set_serial_port(getattr(settings, 'serial_port', "COM3"))
+        self.serial_widget.set_baudrate(getattr(settings, 'serial_baudrate', 115200))
+        self.serial_widget.set_serial_enabled(getattr(settings, 'serial_enabled', True))
         QTimer.singleShot(100, self._apply_panel_state)
-    
-    def _apply_panel_state(self):
-        """Aplica el estado guardado del panel de configuración."""
-        if not hasattr(self, 'config_panel_width') or self.config_panel_width <= 0:
-            if hasattr(self, 'config_panel') and self.config_panel.width() > 0:
-                self.config_panel_width = self.config_panel.width()
-            else:
-                self.config_panel_width = 300 # Fallback if panel not yet sized
 
-        if settings.config_panel_collapsed:
-            if self.config_panel.maximumWidth() > 0:
-                 self.collapse_config_panel()
-            else:
-                self.config_panel.setMaximumWidth(0)
-                if hasattr(self, 'expand_button'): # Show expand button if needed
-                    self.expand_button.show()
+    def _apply_panel_state(self):
+        # Opera sobre self.left_panel_widget
+        target_width_attr = 'left_panel_target_width'
+        if not hasattr(self, target_width_attr) or getattr(self, target_width_attr) <= 0:
+            current_width = self.left_panel_widget.width() if hasattr(self.left_panel_widget, 'width') else 0
+            setattr(self, target_width_attr, current_width if current_width > 50 else 350)
+
+        if getattr(settings, 'config_panel_collapsed', False):
+            if self.left_panel_widget.maximumWidth() > 0 : self.collapse_config_panel()
+            elif hasattr(self, 'expand_button'): self.expand_button.show()
         else:
-            if self.config_panel.maximumWidth() == 0:
-                self.expand_config_panel()
+            if self.left_panel_widget.maximumWidth() == 0: self.expand_config_panel()
+            if hasattr(self, 'expand_button'): self.expand_button.hide()
 
     def save_settings_from_ui(self):
-        """Guarda la configuración actual."""
-        input_settings = self.input_widget.get_all_settings()
-        settings.input_type = input_settings.get("input_type")
-        settings.video_path = input_settings.get("video_path")
-        settings.camera_id = input_settings.get("camera_id")
-        settings.second_camera_id = input_settings.get("second_camera_id")
-
+        input_settings_data = self.input_widget.get_all_settings()
+        settings.input_type = input_settings_data.get("input_type")
+        settings.video_path = input_settings_data.get("video_path")
+        settings.camera_id = input_settings_data.get("camera_id")
+        settings.second_camera_id = input_settings_data.get("second_camera_id")
         settings.model_path = self.model_widget.get_model_path()
         settings.confidence_threshold = self.model_widget.get_confidence()
         settings.frames_espera = self.model_widget.get_frames_wait()
-        
         settings.output_path = self.output_widget.get_output_path()
         settings.output_format = self.output_widget.get_codec()
-        
+        settings.second_camera_output_path = self.output_widget.get_second_cam_output_path()
+        settings.second_camera_output_format = self.output_widget.get_second_cam_codec()
         settings.serial_port = self.serial_widget.get_serial_port()
         settings.serial_baudrate = self.serial_widget.get_baudrate()
         settings.serial_enabled = self.serial_widget.is_serial_enabled()
-        
-        # Guardar estado del panel de configuración
-        if hasattr(self, 'config_panel'):
-            settings.config_panel_collapsed = self.config_panel.width() <= 50
-        
+        if hasattr(self, 'left_panel_widget'):
+            settings.config_panel_collapsed = self.left_panel_widget.maximumWidth() == 0
         success = settings.save_settings()
-        
-        if success:
-            self.show_status_message("Configuración guardada correctamente", 3000)
-        else:
-            self.show_status_message("Error al guardar configuración.", 3000)
+        self.show_status_message("Configuración guardada." if success else "Error al guardar.", 3000)
 
     def process_video(self):
-        """Inicia el procesamiento del video o la cámara."""
         try:
-            from rastreo import (
-                inicializar_modelo, detectar_personas,
-                extraer_ids, actualizar_rastreo, dibujar_anotaciones
-            )
-        except ImportError:
-            self.show_status_message("Error: Módulo 'rastreo.py' no encontrado.", 5000)
-            return
-
+            from rastreo import (inicializar_modelo, detectar_personas, extraer_ids, actualizar_rastreo, dibujar_anotaciones)
+        except ImportError: self.show_status_message("Error: Módulo 'rastreo.py' no encontrado.", 5000); return
         params = self._get_processing_parameters()
-        if not params:
-            return
-
-        self.procesando = True
-        # Determinar si es modo cámara basado en el tipo de entrada, no solo en params['is_camera']
-        # ya que params['is_camera'] podría ser verdadero para una sola cámara.
-        # Necesitamos saber si el *modo de entrada* es cámara.
-        is_live_camera_mode = self.input_widget.get_input_type() == 1
-        self.action_buttons.set_processing_mode(True, is_live_camera_mode)
-
-        # Colapsar el panel de configuración para dar más espacio al video
-        self.collapse_config_panel()
-
+        if not params: self._update_main_processing_buttons_state(); return
+        self.procesando = True; self._update_main_processing_buttons_state(); self.collapse_config_panel()
         self.show_status_message(f"Procesando: {params['video_path_display']}...", 0)
-
+        if params['is_camera']: self._start_record_second_camera()
         try:
             model = inicializar_modelo(str(params['model_path']))
             cap, out, total_frames = self._setup_video_io(params)
-            if not cap or (not out and not params['is_camera']):  # 'out' might be None if only previewing camera
-                self.detener_procesamiento()
-                return
-
-            self._process_video_with_tracking(model, cap, out, params,
-                detectar_personas, extraer_ids, actualizar_rastreo, dibujar_anotaciones, total_frames)
-
-            if cap:
-                cap.release()
-            if out:
-                out.release()
-
-            if self.procesando:  # If not stopped by user
-                output_msg = f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado."
-                self.show_status_message(output_msg, 5000)
-        except Exception as e:
-            self.show_status_message(f"Error en procesamiento: {str(e)}", 5000)
-            traceback.print_exc()
-        finally:
-            self.detener_procesamiento()
+            if not cap: self.detener_procesamiento(); return
+            if not params['is_camera'] and not out: self.detener_procesamiento(); return
+            self._process_video_with_tracking(model, cap, out, params, detectar_personas, extraer_ids, actualizar_rastreo, dibujar_anotaciones, total_frames)
+            if cap: cap.release()
+            if out: out.release()
+            if self.procesando: self.show_status_message(f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado.", 5000)
+        except Exception as e: self.show_status_message(f"Error en procesamiento: {str(e)}", 5000); traceback.print_exc()
+        finally: self.detener_procesamiento()
 
     def detener_procesamiento(self):
-        """Detiene el procesamiento en curso."""
         self.procesando = False
-        self.action_buttons.set_processing_mode(
-            False, 
-            self.input_widget.get_input_type() == 1
-        )
-        
-        # Expandir el panel de configuración al detener el procesamiento
-        self.expand_config_panel()
-        
+        if self.is_recording_second_camera: self._stop_record_second_camera()
+        self._update_main_processing_buttons_state(); self.expand_config_panel()
         self.show_status_message("Procesamiento detenido.", 3000)
 
-    def _get_processing_parameters(self):
-        """Obtiene los parámetros de procesamiento de la interfaz."""
-        model_name = self.model_widget.get_model_path()
-        confidence = self.model_widget.get_confidence()
-        frames_espera = self.model_widget.get_frames_wait()
-        
-        output_path = self.output_widget.get_output_path()
-        codec = self.output_widget.get_codec()
-        
-        is_camera = self.input_widget.get_input_type() == 1
-        video_path_display = "Cámara en vivo"
+    def _start_record_second_camera(self):
+        if not (self.input_widget.second_camera_thread and self.input_widget.second_camera_thread.isRunning() and self.input_widget.get_selected_second_camera_id() is not None):
+            self.show_status_message("Segunda cámara no activa, no se grabará.", 2000); return
+        cam_thread = self.input_widget.second_camera_thread
+        if not cam_thread.cap or not cam_thread.cap.isOpened():
+            self.show_status_message("Stream 2da cámara no disponible. Esperando primer frame...", 2000)
+            self._second_camera_frame_props = {}; self.is_recording_second_camera = True; return
+        fps = cam_thread.cap.get(cv2.CAP_PROP_FPS); width = int(cam_thread.cap.get(cv2.CAP_PROP_FRAME_WIDTH)); height = int(cam_thread.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if fps <= 0: fps = 20.0
+        if width <= 0 or height <= 0:
+            self.show_status_message("Dimensiones 2da cámara inválidas. Esperando primer frame...", 2000)
+            self._second_camera_frame_props = {}; self.is_recording_second_camera = True; return
+        self._second_camera_frame_props = {'fps': fps, 'width': width, 'height': height}
+        self._initialize_second_camera_recorder()
 
-        if is_camera:
-            camera_id = self.input_widget.get_selected_camera_id()
-            second_camera_id = self.input_widget.get_selected_second_camera_id() # Obtener ID de segunda cámara
-            if camera_id is None: # Si la cámara principal no está seleccionada pero el modo es cámara
-                self.show_status_message("Error: Cámara principal no seleccionada.", 3000)
-                return None
-            video_path = camera_id # Para la cámara principal
-            video_path_display = self.input_widget.get_selected_camera_description()
-            # Aquí podriamos decidir cómo manejar la segunda cámara en el procesamiento.
-            # Por ahora, el procesamiento principal se basa en 'video_path' (cámara principal).
-            # Si la segunda cámara es solo para visualización, no se necesita pasar a 'params' para el procesamiento.
-            # Si se va a procesar también, necesitarías modificar la lógica de procesamiento.
+    def _initialize_second_camera_recorder(self):
+        if not all(self._second_camera_frame_props.get(k) for k in ['width', 'height', 'fps']):
+            self.show_status_message("Error: Faltan props para grabar cámara móvil.", 5000); self.is_recording_second_camera = False
+            if self.second_camera_raw_recorder: self.second_camera_raw_recorder.close(); self.second_camera_raw_recorder = None
+            return
+        w = self._second_camera_frame_props['width']; h = self._second_camera_frame_props['height']; fps = self._second_camera_frame_props['fps']
+        output_path_str = self.output_widget.get_second_cam_output_path(); codec_str = self.output_widget.get_second_cam_codec()
+        if not output_path_str or not codec_str: self.show_status_message("Error: Ruta/codec no configurados para 2da cámara.", 5000); self.is_recording_second_camera = False; return
+        final_output_path = Path(output_path_str); output_dir = final_output_path.parent
+        if not output_dir.exists():
+            try: output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e: self.show_status_message(f"Error crear dir 2da cámara ({output_dir}): {e}", 5000); self.is_recording_second_camera = False; return
+        self.second_camera_raw_recorder = VideoOutput()
+        if self.second_camera_raw_recorder.setup(str(final_output_path), codec_str, fps, (w, h)):
+            self.is_recording_second_camera = True; self.show_status_message(f"Grabando cámara móvil en: {final_output_path}", 0)
         else:
-            video_path = self.input_widget.get_video_path()
-            if not video_path:
-                self.show_status_message("Error: No video seleccionado.", 3000)
-                return None
-            video_path_display = Path(video_path).name
+            self.show_status_message(f"Error iniciar grabación 2da cámara ({final_output_path}).", 5000)
+            self.second_camera_raw_recorder = None; self.is_recording_second_camera = False
 
-        models_dir = Path(__file__).parent.parent / "models"
-        model_path = models_dir / model_name
-        if not model_path.exists():
-            model_path = Path(__file__).parent.parent / model_name
-            if not model_path.exists():
-                self.show_status_message(f"Error: Modelo {model_name} no encontrado.", 3000)
-                return None
+    def _stop_record_second_camera(self):
+        if self.second_camera_raw_recorder:
+            info = self.second_camera_raw_recorder.get_output_info(); path = info.get('output_path', 'N/A')
+            self.second_camera_raw_recorder.close(); self.show_status_message(f"Grabación cámara móvil detenida. Guardado en: {path}", 5000)
+            self.second_camera_raw_recorder = None
+        self.is_recording_second_camera = False; self._second_camera_frame_props = {}
 
-        return {
-            'video_path': video_path, 
-            'is_camera': is_camera, 
-            'model_path': model_path,
-            'confidence': confidence, 
-            'frames_espera': frames_espera,
-            'output_path': output_path, 
-            'codec': codec, 
-            'video_path_display': video_path_display,
-            # Podrías añadir 'second_camera_id': second_camera_id si fuera necesario para el procesamiento
-        }
+    def _handle_second_camera_frame_for_recording(self, frame):
+        if frame is None: return
+        if self.is_recording_second_camera and not self.second_camera_raw_recorder:
+            if not self._second_camera_frame_props.get('width'):
+                h, w, _ = frame.shape; self._second_camera_frame_props.update({'width':w, 'height':h})
+                fps_val = 20.0
+                if self.input_widget.second_camera_thread and self.input_widget.second_camera_thread.cap and self.input_widget.second_camera_thread.cap.isOpened():
+                    thread_fps = self.input_widget.second_camera_thread.cap.get(cv2.CAP_PROP_FPS)
+                    if thread_fps > 0: fps_val = thread_fps
+                self._second_camera_frame_props['fps'] = fps_val
+                self.show_status_message("Props frame obtenidas. Iniciando grabador CM...", 1000); self._initialize_second_camera_recorder()
+        if self.is_recording_second_camera and self.second_camera_raw_recorder and self.second_camera_raw_recorder.output_writer:
+            try: self.second_camera_raw_recorder.write_frame(frame)
+            except Exception as e: print(f"Error escribir frame 2da cámara: {e}"); self.show_status_message(f"Error escribiendo frame CM: {e}", 3000)
+
+    def _get_processing_parameters(self):
+        model_name=self.model_widget.get_model_path(); conf=self.model_widget.get_confidence(); wait=self.model_widget.get_frames_wait()
+        out_path=self.output_widget.get_output_path(); codec=self.output_widget.get_codec()
+        is_cam=self.input_widget.get_input_type()==1; disp_path="Cámara en vivo"
+        if is_cam:
+            cam_id=self.input_widget.get_selected_camera_id()
+            if cam_id is None: self.show_status_message("Error: Cámara principal no seleccionada.",3000);return None
+            vid_path=cam_id; disp_path=self.input_widget.get_selected_camera_description()
+        else:
+            vid_path=self.input_widget.get_video_path()
+            if not vid_path: self.show_status_message("Error: No video seleccionado.",3000);return None
+            disp_path=Path(vid_path).name; vid_path=str(vid_path)
+        m_path_obj=Path(model_name)
+        if not m_path_obj.is_file():
+            p_root_m_path=Path.cwd()/"models"/model_name
+            if p_root_m_path.is_file():m_path_obj=p_root_m_path
+            elif Path(model_name).is_file():m_path_obj=Path(model_name)
+            else:self.show_status_message(f"Error: Modelo '{model_name}' no encontrado.",5000);return None
+        return{'video_path':vid_path,'is_camera':is_cam,'model_path':str(m_path_obj),'confidence':conf,
+               'frames_espera':wait,'output_path':out_path,'codec':codec,'video_path_display':disp_path}
 
     def _setup_video_io(self, params):
-        """Configura la entrada y salida de video."""
-        cap = None
-        out = None
-        total_frames = 0
+        cap,out,total_frames=None,None,0
         try:
-            if params['is_camera']:
-                # For live camera processing
-                cap = cv2.VideoCapture(params['video_path'])
-                if not cap.isOpened():
-                    self.show_status_message(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
-                    return None, None, 0
-                total_frames = -1  # Live camera
-            else:  # File
-                cap = cv2.VideoCapture(params['video_path'])
-                if not cap.isOpened():
-                    self.show_status_message(f"Error: No se pudo abrir video {params['video_path']}", 3000)
-                    return None, None, 0
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            vid_src=params['video_path']; cap=cv2.VideoCapture(vid_src)
+            if not cap.isOpened():
+                self.show_status_message(f"Error: No se pudo abrir: {params['video_path_display']}",3000)
+                return None,None,0
 
-            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if fps <= 0:
-                fps = 30.0
+            total_frames=-1 if params['is_camera']else int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            w=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH));h=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT));fps=cap.get(cv2.CAP_PROP_FPS)
+            if fps<=0:fps=30.0
 
-            # Setup output writer only if not just previewing camera
-            # If it's a camera and we want to save the processed output:
-            if not params['is_camera'] or (params['is_camera'] and params['output_path']):
-                output_path = self.output_widget._ensure_valid_extension(params['output_path'], params['codec'])
-                params['output_path'] = output_path  # Update params
-                fourcc = cv2.VideoWriter_fourcc(*params['codec'])
-                output_dir = os.path.dirname(output_path)
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
+            if w<=0 or h<=0:
+                self.show_status_message(f"Error: Dimensiones inválidas {params['video_path_display']}",3000)
+                if cap:
+                    cap.release()
+                return None,None,0
 
-                if os.path.exists(output_path):
+            if not params['is_camera']or(params['is_camera']and params['output_path']):
+                out_path_str=self.output_widget._ensure_valid_extension(params['output_path'],params['codec'])
+                params['output_path']=out_path_str;fourcc=cv2.VideoWriter_fourcc(*params['codec']);out_dir=os.path.dirname(out_path_str)
+                if out_dir and not os.path.exists(out_dir):os.makedirs(out_dir)
+
+                if os.path.exists(out_path_str):
                     try:
-                        os.remove(output_path)
+                        os.remove(out_path_str)
                     except Exception as e:
-                        self.show_status_message(f"No se pudo eliminar el archivo anterior: {e}", 3000)
+                        self.show_status_message(f"No se pudo eliminar {out_path_str}:{e}",3000)
                         if cap:
                             cap.release()
-                        return None, None, 0
+                        return None,None,0
 
-                out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+                out=cv2.VideoWriter(out_path_str,fourcc,fps,(w,h))
                 if not out.isOpened():
-                    self.show_status_message("Error al crear archivo de salida. Intentando H264 para MP4...", 3000)
-                    if params['codec'] == "MP4V" and os.path.splitext(output_path)[1].lower() == ".mp4":
-                        fourcc = cv2.VideoWriter_fourcc(*"H264")
-                        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-                        if not out.isOpened():
-                            self.show_status_message("Error al crear archivo de salida incluso con H264.", 3000)
+                    self.show_status_message(f"Error crear salida {out_path_str}.Intentando H264...",3000)
+                    if params['codec'].upper()=="MP4V"and os.path.splitext(out_path_str)[1].lower()==".mp4":
+                        f_alt=cv2.VideoWriter_fourcc(*"H264")
+                        o_alt=cv2.VideoWriter(out_path_str,f_alt,fps,(w,h))
+                        if not o_alt.isOpened():
+                            self.show_status_message(f"Error con H264 en {out_path_str}.",3000)
                             if cap:
                                 cap.release()
-                            return None, None, 0
-            return cap, out, total_frames
+                            return None,None,0
+                        out=o_alt
+                    else:
+                        if cap:cap.release()
+                        return None,None,0
+            return cap,out,total_frames
         except Exception as e:
-            self.show_status_message(f"Error en setup I/O: {str(e)}", 3000)
-            if cap:
-                cap.release()
-            if out:
-                out.release()
-            return None, None, 0
+            self.show_status_message(f"Error crítico en _setup_video_io:{str(e)}",5000);traceback.print_exc()
+            if cap:cap.release()
+            if'out'in locals()and out and out.isOpened():out.release()
+            return None,None,0
 
-    def _process_video_with_tracking(self, model, cap, out, params,
-                                    detectar_personas, extraer_ids,
-                                    actualizar_rastreo, dibujar_anotaciones, total_frames):
-        """Procesa el video frame por frame aplicando el tracking."""
-        # Nota: Esta función actualmente solo procesa una fuente de video (cap).
-        # Si se necesita procesar la segunda cámara simultáneamente (no solo mostrarla),
-        # esta lógica necesitaría una refactorización mayor para manejar dos bucles de captura
-        # o un sistema de threads más complejo para el procesamiento.
-        # Por ahora, la segunda cámara es solo para previsualización.
-
-        primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
-        ids_globales = set()
-        frame_count = 0
-        controlar_servo = params['is_camera']  # servo control solo para live camera
-
+    def _process_video_with_tracking(self,model,cap,out,params,detect_p,extract_ids,update_track,draw_anno,total_frames):
+        p_id,r_id,l_coords,f_lost=None,None,None,0;ids_g=set();f_count=0;ctrl_servo=params['is_camera']
         while self.procesando:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            frame_count += 1
-            if not params['is_camera'] and total_frames > 0:
-                progress = int((frame_count / total_frames) * 100)
-                self.show_status_message(f"Procesando: {progress}%", 0)
-            elif params['is_camera'] and frame_count % 30 == 0:
-                self.show_status_message(f"Frames procesados (en vivo): {frame_count}", 0)
-
-            frame_width = frame.shape[1]
-            result = detectar_personas(model, frame, params['confidence'])
-            if result is None:
-                if params['is_camera']:
-                    self.video_display.display_frame(frame)  # Show raw frame for main camera
-                    # Aquí no se maneja el frame de la segunda cámara porque este bucle es para la principal.
-                    # La segunda cámara actualiza su propia vista previa a través de su CameraThread.
-                if out:
-                    out.write(frame)  # Write raw frame if detection fails
-                QApplication.processEvents()
-                continue
-
-            boxes = result.boxes
-            ids_esta_frame = extraer_ids(boxes)
-            primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(
-                primer_id, rastreo_id, ids_esta_frame, frames_perdidos, params['frames_espera']
-            )
-            if reiniciar_coords:
-                ultima_coords = None
-
-            annotated_frame, ultima_coords = dibujar_anotaciones(
-                result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
-                frame_width, controlar_servo=controlar_servo
-            )
-
-            if self.video_display:  # Mostrar el frame procesado
-                self.video_display.display_frame(annotated_frame)
-
-            if out:
-                out.write(annotated_frame)
-
-            QApplication.processEvents()  # Mantener UI responsive
+            ret,frame=cap.read()
+            if not ret:self.show_status_message("Fin stream principal.",0 if params['is_camera']else 2000);break
+            f_count+=1
+            if not params['is_camera']and total_frames>0:self.show_status_message(f"Procesando:{int((f_count/total_frames)*100)}%",0)
+            elif params['is_camera']and f_count%30==0:self.show_status_message(f"Frames procesados(vivo):{f_count}",0)
+            res=detect_p(model,frame,params['confidence'])
+            if res is None:
+                if params['is_camera']:self.video_display.display_frame(frame)
+                if out:out.write(frame)
+                QApplication.processEvents();continue
+            boxes=res.boxes;ids_frame=extract_ids(boxes)
+            p_id,r_id,re_coords,f_lost=update_track(p_id,r_id,ids_frame,f_lost,params['frames_espera'])
+            if re_coords:l_coords=None
+            anno_yolo=res.plot()
+            anno_final,l_coords=draw_anno(anno_yolo,boxes,r_id,l_coords,ids_g,frame.shape[1],controlar_servo=ctrl_servo)
+            if self.video_display:self.video_display.display_frame(anno_final)
+            if out:out.write(anno_final)
+            QApplication.processEvents()
 
     def toggle_config_panel(self):
-        """Alterna entre panel colapsado y expandido."""
-        if hasattr(self.config_panel, "width") and self.config_panel.width() > 50:  # Si está expandido
+        # Animar self.left_panel_widget
+        is_currently_collapsed = (self.left_panel_widget.maximumWidth() == 0)
+        if not is_currently_collapsed:
             self.collapse_config_panel()
-            # Guardar estado en configuración
             settings.config_panel_collapsed = True
-            settings.save_settings()
-        else:  # Si está colapsado
+        else:
             self.expand_config_panel()
-            # Guardar estado en configuración
             settings.config_panel_collapsed = False
-            settings.save_settings()
-    
+        if hasattr(settings, 'save_settings'): settings.save_settings()
+
     def collapse_config_panel(self):
-        """Colapsa el panel de configuración hacia la izquierda."""
-        # Guardar el ancho actual para poder restaurarlo después
-        if self.config_panel.width() > 0 : 
-            self.config_panel_width = self.config_panel.width()
-        
-        # Crear una animación para colapsar suavemente
-        self.animation = QPropertyAnimation(self.config_panel, b"maximumWidth")
-        self.animation.setDuration(300)  # 300ms para la animación
-        self.animation.setStartValue(self.config_panel.width())
+        # Animar self.left_panel_widget
+        current_width = self.left_panel_widget.width()
+        if current_width > 0 and self.left_panel_widget.maximumWidth() > 0 :
+            self.left_panel_target_width = current_width
+
+        self.animation = QPropertyAnimation(self.left_panel_widget, b"maximumWidth")
+        self.animation.setDuration(300)
+        self.animation.setStartValue(current_width if current_width > 0 else getattr(self, 'left_panel_target_width', 350))
         self.animation.setEndValue(0)
         self.animation.setEasingCurve(QEasingCurve.Type.OutQuad)
-        
-        # Visibilidad de boton stop a partir de si se esta procesando o no
-        if self.procesando:
-            self.new_stop_button_main.show()
-            self.new_stop_button_main.setEnabled(True)
-        else:
-            self.new_stop_button_main.hide()
-            self.new_stop_button_main.setEnabled(False)
-            
+
+        if self.procesando: self.new_stop_button_main.show(); self.new_stop_button_main.setEnabled(True)
+        else: self.new_stop_button_main.hide(); self.new_stop_button_main.setEnabled(False)
         self.animation.start()
-        
-        # Crear un botón para expandir el panel
+
         if not hasattr(self, 'expand_button'):
-            self.expand_button = QPushButton(">")
-            self.expand_button.setFixedSize(20, 60)
-            self.expand_button.clicked.connect(self.expand_config_panel)
-            self.expand_button.setToolTip("Expandir panel (Ctrl+B)")
-            self.expand_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #f0f0f0;
-                    border: 1px solid #ccc;
-                    border-left: none;
-                    border-top-right-radius: 10px;
-                    border-bottom-right-radius: 10px;
-                }
-                QPushButton:hover { background-color: #e0e0e0; }
-            """)
-            
-        # Añadir el botón al layout principal, alineado a la izquierda y centrado verticalmente
-        self.content_layout.insertWidget(0, self.expand_button, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.expand_button = QPushButton(">"); self.expand_button.setFixedSize(20,60)
+            self.expand_button.clicked.connect(self.expand_config_panel); self.expand_button.setToolTip("Expandir (Ctrl+B)")
+            self.expand_button.setStyleSheet("QPushButton{background-color:#f0f0f0;border:1px solid #ccc;border-left:none;border-top-right-radius:10px;border-bottom-right-radius:10px} QPushButton:hover{background-color:#e0e0e0}")
+            self.content_layout.insertWidget(0, self.expand_button, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.expand_button.show()
 
     def expand_config_panel(self):
-        """Expande el panel de configuración."""
-        # Usar getattr para un acceso seguro a config_panel_width, default de 300
-        target_expanded_width = getattr(self, 'config_panel_width', 300)
-        if target_expanded_width <= 0:
-            target_expanded_width = 300
+        # Animar self.left_panel_widget
+        target_width = getattr(self, 'left_panel_target_width', 350)
+        if target_width <= 0: target_width = 350
 
-        # Animar la expansión
-        self.animation = QPropertyAnimation(self.config_panel, b"maximumWidth")
+        self.animation = QPropertyAnimation(self.left_panel_widget, b"maximumWidth")
         self.animation.setDuration(300)
-        # Iniciar animacion desde el maximo ancho
-        self.animation.setStartValue(self.config_panel.maximumWidth())
-        self.animation.setEndValue(target_expanded_width)
+        self.animation.setStartValue(self.left_panel_widget.maximumWidth())
+        self.animation.setEndValue(target_width)
         self.animation.setEasingCurve(QEasingCurve.Type.OutQuad)
         self.animation.start()
-        
-        # Ocultar el botón de expansión
-        if hasattr(self, 'expand_button'):
-            self.expand_button.hide()
-        
-        # Esconder el boton cuando se expande el panel
-        if hasattr(self, 'new_stop_button_main'):
-            self.new_stop_button_main.hide()
-            self.new_stop_button_main.setEnabled(False)
+
+        if hasattr(self, 'expand_button'): self.expand_button.hide()
+        if hasattr(self, 'new_stop_button_main'): self.new_stop_button_main.hide(); self.new_stop_button_main.setEnabled(False)
 
     def closeEvent(self, event):
-        """Maneja el evento de cierre de la ventana."""
-        self.input_widget.detener_previsualizacion()
-        self.input_widget.detener_segunda_previsualizacion() # Detener también la segunda cámara
-        self.detener_procesamiento()
+        self.input_widget.detener_previsualizacion(); self.input_widget.detener_segunda_previsualizacion()
+        if self.procesando : self.detener_procesamiento()
+        elif self.is_recording_second_camera: self._stop_record_second_camera()
         super().closeEvent(event)
 
     def resizeEvent(self, event):
-        """Maneja eventos de cambio de tamaño de la ventana."""
         super().resizeEvent(event)
-        
-        # Si la ventana se hace demasiado estrecha, colapsar automáticamente el panel
+        # Usar self.left_panel_widget para chequear el ancho del panel
         if self.width() < 900 and not hasattr(self, 'auto_collapsed') and not self.procesando:
-            self.collapse_config_panel()
-            self.auto_collapsed = True
+            if self.left_panel_widget.maximumWidth() > 0 :
+                self.collapse_config_panel()
+                self.auto_collapsed = True
         elif self.width() >= 900 and hasattr(self, 'auto_collapsed') and not self.procesando:
-            self.expand_config_panel()
+            if self.left_panel_widget.maximumWidth() == 0:
+                self.expand_config_panel()
             delattr(self, 'auto_collapsed')
+
