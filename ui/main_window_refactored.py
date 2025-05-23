@@ -6,6 +6,7 @@ import sys
 import os
 import traceback
 import cv2
+import numpy as np
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -295,15 +296,16 @@ class MainWindow(QMainWindow):
             self.person_tracker.detector.set_confidence(params['confidence'])
             self.person_tracker.tracker.set_frames_espera(params['frames_espera'])
 
-            cap, out, total_frames = self._setup_video_io(params)
+            cap, second_cap, out, total_frames = self._setup_video_io(params)
             if not cap or (not out and not params['is_camera']):
                 self.detener_procesamiento()
                 return
 
-            self._process_video_with_tracking(cap, out, params, total_frames)
-
+            self._process_video_with_tracking(cap, second_cap, out, params, total_frames)            
             if cap:
                 cap.release()
+            if second_cap:
+                second_cap.release()
             if out:
                 out.release()
 
@@ -358,9 +360,8 @@ class MainWindow(QMainWindow):
             model_path = Path(__file__).parent.parent / model_name
             if not model_path.exists():
                 self.show_status_message(f"Error: Modelo {model_name} no encontrado.", 3000)
-                return None
-
-        return {
+                return None        # Si estamos en modo cámara, guardar también la info de la segunda cámara
+        result = {
             'video_path': video_path, 
             'is_camera': is_camera, 
             'model_path': model_path,
@@ -370,18 +371,37 @@ class MainWindow(QMainWindow):
             'codec': codec, 
             'video_path_display': video_path_display,
         }
-
+        
+        if is_camera:
+            # Añadir info de la segunda cámara si está habilitada
+            second_camera_id = self.input_widget.get_selected_second_camera_id()
+            if second_camera_id is not None and second_camera_id != -1:
+                result['second_camera_id'] = second_camera_id
+                result['second_camera_display'] = self.input_widget.get_selected_second_camera_description()
+        
+        return result    
     def _setup_video_io(self, params):
         """Configura la entrada y salida de video."""
         cap = None
+        second_cap = None
         out = None
         total_frames = 0
         try:
             if params['is_camera']:
+                # Configuración de la cámara principal
                 cap = cv2.VideoCapture(params['video_path'])
                 if not cap.isOpened():
                     self.show_status_message(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
-                    return None, None, 0
+                    return None, None, None, 0
+                
+                # Configuración de la segunda cámara si está disponible
+                if 'second_camera_id' in params:
+                    second_cap = cv2.VideoCapture(params['second_camera_id'])
+                    if not second_cap.isOpened():
+                        self.show_status_message(f"Advertencia: No se pudo abrir la segunda cámara ID {params['second_camera_id']}", 3000)
+                        second_cap = None
+                
+                total_frames = -1  # Live camera
                 total_frames = -1  # Live camera
             else:
                 cap = cv2.VideoCapture(params['video_path'])
@@ -421,17 +441,20 @@ class MainWindow(QMainWindow):
                             self.show_status_message("Error al crear archivo de salida incluso con H264.", 3000)
                             if cap:
                                 cap.release()
-                            return None, None, 0
-            return cap, out, total_frames
+                            if second_cap:
+                                second_cap.release()
+                            return None, None, None, 0
+            return cap, second_cap, out, total_frames
         except Exception as e:
             self.show_status_message(f"Error en setup I/O: {str(e)}", 3000)
             if cap:
                 cap.release()
+            if second_cap:
+                second_cap.release()
             if out:
                 out.release()
-            return None, None, 0
-
-    def _process_video_with_tracking(self, cap, out, params, total_frames):
+            return None, None, None, 0    
+    def _process_video_with_tracking(self, cap, second_cap, out, params, total_frames):
         """Procesa el video frame por frame aplicando el tracking usando PersonTrackingManager."""
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
@@ -439,9 +462,21 @@ class MainWindow(QMainWindow):
         controlar_servo = params['is_camera'] and self.serial_widget.is_serial_enabled()  # Solo si es cámara y está activo
 
         while self.procesando:
+            # Leer frame de la cámara principal
             ret, frame = cap.read()
             if not ret:
                 break
+                
+            # Leer frame de la segunda cámara si está disponible
+            second_frame = None
+            if second_cap:
+                ret_second, second_frame = second_cap.read()
+                if ret_second:
+                    # Mostrar el segundo frame en la UI
+                    if params['is_camera']:
+                        self.video_display.display_second_frame(second_frame)
+                else:
+                    second_frame = None
 
             frame_count += 1
             if not params['is_camera'] and total_frames > 0:
@@ -453,10 +488,17 @@ class MainWindow(QMainWindow):
             frame_width = frame.shape[1]
             result = self.person_tracker.detectar_personas(frame, params['confidence'])
             if result is None:
+                # Si no hay detección, mostrar el frame original
                 if params['is_camera']:
                     self.video_display.display_frame(frame)
-                if out:
+                
+                # Combinar frames para salida de video
+                if second_frame is not None and out:
+                    combined_frame = self._combine_frames(frame, second_frame)
+                    out.write(combined_frame)
+                elif out:
                     out.write(frame)
+                    
                 QApplication.processEvents()
                 continue
 
@@ -473,11 +515,55 @@ class MainWindow(QMainWindow):
                 frame_width, controlar_servo=controlar_servo
             )
 
+            # Mostrar el frame anotado en la UI
             if self.video_display:
                 self.video_display.display_frame(annotated_frame)
+            
+            # Preparar y guardar el frame combinado con ambas cámaras
             if out:
-                out.write(annotated_frame)
+                if second_frame is not None:
+                    combined_frame = self._combine_frames(annotated_frame, second_frame)
+                    out.write(combined_frame)
+                else:
+                    out.write(annotated_frame)
+                    
             QApplication.processEvents()
+
+    def _combine_frames(self, main_frame, second_frame):
+        """
+        Combina dos frames en uno solo con proporción 3/4 para el principal y 1/4 para el secundario.
+        
+        Args:
+            main_frame: El frame de la cámara principal
+            second_frame: El frame de la cámara secundaria (móvil)
+            
+        Returns:
+            combined_frame: Un único frame combinando ambos
+        """
+        if main_frame is None:
+            return None
+            
+        if second_frame is None:
+            return main_frame  # Si no hay segundo frame, devolver solo el principal
+            
+        # Obtener dimensiones del frame principal
+        h, w = main_frame.shape[:2]
+        
+        # Calcular el ancho que ocupará el frame secundario (1/4 del total)
+        second_width = w // 4
+        
+        # Redimensionar el frame secundario para que ocupe 1/4 del ancho y la misma altura
+        second_frame_resized = cv2.resize(second_frame, (second_width, h))
+        
+        # Crear un nuevo frame combinando ambos (3/4 para principal, 1/4 para secundario)
+        combined_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        combined_frame[:, :w-second_width, :] = main_frame[:, :w-second_width, :]
+        combined_frame[:, w-second_width:, :] = second_frame_resized
+        
+        # Dibujar una línea separadora
+        cv2.line(combined_frame, (w-second_width, 0), (w-second_width, h), (255, 255, 255), 1)
+        
+        return combined_frame
 
     def toggle_config_panel(self):
         """Alterna entre panel colapsado y expandido."""
