@@ -296,18 +296,25 @@ class MainWindow(QMainWindow):
             self.person_tracker.detector.set_confidence(params['confidence'])
             self.person_tracker.tracker.set_frames_espera(params['frames_espera'])
 
-            cap, second_cap, out, total_frames = self._setup_video_io(params)
-            if not cap or (not out and not params['is_camera']):
+            cap, second_cap, main_out, mobile_out, total_frames = self._setup_video_io(params)
+            # Cancelar si no se pudo abrir la cámara o el archivo de video
+            if not cap:
                 self.detener_procesamiento()
                 return
 
-            self._process_video_with_tracking(cap, second_cap, out, params, total_frames)            
+            # Si es archivo y no hay salida (porque no tildó ningún checkbox), no tiene sentido procesar
+            if not params['is_camera'] and not main_out and not mobile_out:
+                self.show_status_message("Debe tildar al menos una salida para guardar video de archivo.", 4000)
+                self.detener_procesamiento()
+                return
+
+            self._process_video_with_tracking(cap, second_cap, main_out, mobile_out, params, total_frames)            
             if cap:
                 cap.release()
             if second_cap:
                 second_cap.release()
-            if out:
-                out.release()
+            if main_out:
+                main_out.release()
 
             if self.procesando:
                 output_msg = f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado."
@@ -371,7 +378,8 @@ class MainWindow(QMainWindow):
             'codec': codec, 
             'video_path_display': video_path_display,
         }
-        
+        result['save_main'] = self.output_widget.should_save_main_camera()
+        result['save_mobile'] = self.output_widget.should_save_mobile_camera()
         if is_camera:
             # Añadir info de la segunda cámara si está habilitada
             second_camera_id = self.input_widget.get_selected_second_camera_id()
@@ -380,35 +388,84 @@ class MainWindow(QMainWindow):
                 result['second_camera_display'] = self.input_widget.get_selected_second_camera_description()
         
         return result    
+    # def _setup_video_io(self, params):
+    #     """Configura la entrada y salida de video."""
+    #     cap = None
+    #     second_cap = None
+    #     main_out = None
+    #     mobile_out = None
+    #     total_frames = 0
+    #     try:
+    #         if params['is_camera']:
+    #             # Configuración de la cámara principal
+    #             cap = cv2.VideoCapture(params['video_path'])
+    #             if not cap.isOpened():
+    #                 self.show_status_message(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
+    #                 return None, None, None, 0
+                
+    #             # Configuración de la segunda cámara si está disponible
+    #             if 'second_camera_id' in params:
+    #                 second_cap = cv2.VideoCapture(params['second_camera_id'])
+    #                 if not second_cap.isOpened():
+    #                     self.show_status_message(f"Advertencia: No se pudo abrir la segunda cámara ID {params['second_camera_id']}", 3000)
+    #                     second_cap = None
+                
+    #             total_frames = -1  # Live camera
+    #             total_frames = -1  # Live camera
+    #         else:
+    #             cap = cv2.VideoCapture(params['video_path'])
+    #             if not cap.isOpened():
+    #                 self.show_status_message(f"Error: No se pudo abrir video {params['video_path']}", 3000)
+    #                 return None, None, 0
+    #             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    #         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    #         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    #         fps = cap.get(cv2.CAP_PROP_FPS)
+    #         if fps <= 0:
+    #             fps = 30.0
+
+    #         ext = os.path.splitext(params['output_path'])[1]
+    #         base_path = os.path.splitext(params['output_path'])[0]
+    #         fourcc = cv2.VideoWriter_fourcc(*params['codec'])
+
+    #         if params.get('save_main'):
+    #             main_out_path = base_path + "_main" + ext
+    #             main_out = cv2.VideoWriter(main_out_path, fourcc, fps, (frame_width, frame_height))
+
+    #         if params.get('save_mobile'):
+    #             mobile_out_path = base_path + "_mobile" + ext
+    #             mobile_out = cv2.VideoWriter(mobile_out_path, fourcc, fps, (frame_width, frame_height))
+
+    #         total_frames = -1 if params['is_camera'] else int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    #         return cap, second_cap, main_out, mobile_out, total_frames
+
+    #     except Exception as e:
+    #         self.show_status_message(f"Error en setup I/O: {str(e)}", 3000)
+    #         if cap: cap.release()
+    #         if second_cap: second_cap.release()
+    #         if main_out: main_out.release()
+    #         if mobile_out: mobile_out.release()
+    #         return None, None, None, None, 0  
+
     def _setup_video_io(self, params):
-        """Configura la entrada y salida de video."""
         cap = None
         second_cap = None
-        out = None
+        main_out = None
+        mobile_out = None
         total_frames = 0
         try:
-            if params['is_camera']:
-                # Configuración de la cámara principal
-                cap = cv2.VideoCapture(params['video_path'])
-                if not cap.isOpened():
-                    self.show_status_message(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
-                    return None, None, None, 0
-                
-                # Configuración de la segunda cámara si está disponible
-                if 'second_camera_id' in params:
-                    second_cap = cv2.VideoCapture(params['second_camera_id'])
-                    if not second_cap.isOpened():
-                        self.show_status_message(f"Advertencia: No se pudo abrir la segunda cámara ID {params['second_camera_id']}", 3000)
-                        second_cap = None
-                
-                total_frames = -1  # Live camera
-                total_frames = -1  # Live camera
-            else:
-                cap = cv2.VideoCapture(params['video_path'])
-                if not cap.isOpened():
-                    self.show_status_message(f"Error: No se pudo abrir video {params['video_path']}", 3000)
-                    return None, None, 0
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap = cv2.VideoCapture(params['video_path'])
+            if not cap.isOpened():
+                self.show_status_message(f"Error: No se pudo abrir {params['video_path']}", 3000)
+                return None, None, None, None, 0
+
+            if 'second_camera_id' in params:
+                second_cap = cv2.VideoCapture(params['second_camera_id'])
+                if not second_cap.isOpened():
+                    self.show_status_message("Advertencia: No se pudo abrir la segunda cámara.", 3000)
+                    second_cap = None
 
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -416,65 +473,136 @@ class MainWindow(QMainWindow):
             if fps <= 0:
                 fps = 30.0
 
-            if not params['is_camera'] or (params['is_camera'] and params['output_path']):
-                output_path = self.output_widget._ensure_valid_extension(params['output_path'], params['codec'])
-                params['output_path'] = output_path
-                fourcc = cv2.VideoWriter_fourcc(*params['codec'])
-                output_dir = os.path.dirname(output_path)
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                if os.path.exists(output_path):
-                    try:
-                        os.remove(output_path)
-                    except Exception as e:
-                        self.show_status_message(f"No se pudo eliminar el archivo anterior: {e}", 3000)
-                        if cap:
-                            cap.release()
-                        return None, None, 0
-                out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-                if not out.isOpened():
-                    self.show_status_message("Error al crear archivo de salida. Intentando H264 para MP4...", 3000)
-                    if params['codec'] == "MP4V" and os.path.splitext(output_path)[1].lower() == ".mp4":
-                        fourcc = cv2.VideoWriter_fourcc(*"H264")
-                        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-                        if not out.isOpened():
-                            self.show_status_message("Error al crear archivo de salida incluso con H264.", 3000)
-                            if cap:
-                                cap.release()
-                            if second_cap:
-                                second_cap.release()
-                            return None, None, None, 0
-            return cap, second_cap, out, total_frames
+            ext = os.path.splitext(params['output_path'])[1]
+            base_path = os.path.splitext(params['output_path'])[0]
+            fourcc = cv2.VideoWriter_fourcc(*params['codec'])
+
+            if params.get('save_main'):
+                main_out_path = base_path + "_main" + ext
+                main_out = cv2.VideoWriter(main_out_path, fourcc, fps, (frame_width, frame_height))
+
+            if params.get('save_mobile'):
+                mobile_out_path = base_path + "_mobile" + ext
+                mobile_out = cv2.VideoWriter(mobile_out_path, fourcc, fps, (frame_width, frame_height))
+
+            total_frames = -1 if params['is_camera'] else int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            return cap, second_cap, main_out, mobile_out, total_frames
+
         except Exception as e:
             self.show_status_message(f"Error en setup I/O: {str(e)}", 3000)
-            if cap:
-                cap.release()
-            if second_cap:
-                second_cap.release()
-            if out:
-                out.release()
-            return None, None, None, 0    
-    def _process_video_with_tracking(self, cap, second_cap, out, params, total_frames):
+            if cap: cap.release()
+            if second_cap: second_cap.release()
+            if main_out: main_out.release()
+            if mobile_out: mobile_out.release()
+            return None, None, None, None, 0
+
+    # def _process_video_with_tracking(self, cap, second_cap, main_out, mobile_out, params, total_frames):
+    #     """Procesa el video frame por frame aplicando el tracking usando PersonTrackingManager."""
+    #     primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
+    #     ids_globales = set()
+    #     frame_count = 0
+    #     controlar_servo = params['is_camera'] and self.serial_widget.is_serial_enabled()  # Solo si es cámara y está activo
+
+    #     while self.procesando:
+    #         # Leer frame de la cámara principal
+    #         ret, frame = cap.read()
+    #         if not ret:
+    #             break
+                
+    #         # Leer frame de la segunda cámara si está disponible
+    #         second_frame = None
+    #         if second_cap:
+    #             ret_second, second_frame = second_cap.read()
+    #             if ret_second:
+    #                 # Mostrar el segundo frame en la UI
+    #                 if params['is_camera']:
+    #                     self.video_display.display_second_frame(second_frame)
+    #             else:
+    #                 second_frame = None
+
+    #         frame_count += 1
+    #         if not params['is_camera'] and total_frames > 0:
+    #             progress = int((frame_count / total_frames) * 100)
+    #             self.show_status_message(f"Procesando: {progress}%", 0)
+    #         elif params['is_camera'] and frame_count % 30 == 0:
+    #             self.show_status_message(f"Frames procesados (en vivo): {frame_count}", 0)
+
+    #         frame_width = frame.shape[1]
+    #         result = self.person_tracker.detectar_personas(frame, params['confidence'])
+    #         if result is None:
+    #             # Si no hay detección, mostrar el frame original
+    #             if params['is_camera']:
+    #                 self.video_display.display_frame(frame)
+                
+    #             # Combinar frames para salida de video
+    #             if second_frame is not None and main_out:
+    #                 combined_frame = self._combine_frames(frame, second_frame)
+    #                 main_out.write(combined_frame)
+    #             elif main_out:
+    #                 main_out.write(frame)
+                    
+    #             QApplication.processEvents()
+    #             continue
+
+    #         boxes = result.boxes
+    #         ids_esta_frame = self.person_tracker.extraer_ids(boxes)
+    #         primer_id, rastreo_id, reiniciar_coords, frames_perdidos = self.person_tracker.actualizar_rastreo(
+    #             primer_id, rastreo_id, ids_esta_frame, frames_perdidos, params['frames_espera']
+    #         )
+    #         if reiniciar_coords:
+    #             ultima_coords = None
+
+    #         annotated_frame, ultima_coords = self.person_tracker.dibujar_anotaciones(
+    #             result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
+    #             frame_width, controlar_servo=controlar_servo
+    #         )
+
+    #         # Mostrar el frame anotado en la UI
+    #         if self.video_display:
+    #             self.video_display.display_frame(annotated_frame)
+            
+    #         # Preparar y guardar el frame combinado con ambas cámaras
+    #         if main_out:
+    #             if second_frame is not None:
+    #                 combined_frame = self._combine_frames(annotated_frame, second_frame)
+    #                 main_out.write(combined_frame)
+    #             else:
+    #                 main_out.write(annotated_frame)
+
+    #         if mobile_out and ultima_coords:
+    #             x1, y1, x2, y2 = map(int, ultima_coords)
+    #             h, w = frame.shape[:2]
+    #             x1 = max(0, x1); y1 = max(0, y1)
+    #             x2 = min(w, x2); y2 = min(h, y2)
+    #             if x2 > x1 and y2 > y1:
+    #                 zoom_frame = frame[y1:y2, x1:x2]
+    #                 zoom_frame = cv2.resize(zoom_frame, (w, h))
+    #                 mobile_out.write(zoom_frame)        
+    #         QApplication.processEvents()
+
+    #     if main_out:
+    #         main_out.release()
+    #     if mobile_out:
+    #         mobile_out.release()
+
+    def _process_video_with_tracking(self, cap, second_cap, main_out, mobile_out, params, total_frames):
         """Procesa el video frame por frame aplicando el tracking usando PersonTrackingManager."""
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
         frame_count = 0
-        controlar_servo = params['is_camera'] and self.serial_widget.is_serial_enabled()  # Solo si es cámara y está activo
+        controlar_servo = params['is_camera'] and self.serial_widget.is_serial_enabled()
 
         while self.procesando:
-            # Leer frame de la cámara principal
             ret, frame = cap.read()
             if not ret:
                 break
-                
-            # Leer frame de la segunda cámara si está disponible
+
             second_frame = None
             if second_cap:
                 ret_second, second_frame = second_cap.read()
                 if ret_second:
-                    # Mostrar el segundo frame en la UI
-                    if params['is_camera']:
-                        self.video_display.display_second_frame(second_frame)
+                    self.video_display.display_second_frame(second_frame)
                 else:
                     second_frame = None
 
@@ -488,22 +616,17 @@ class MainWindow(QMainWindow):
             frame_width = frame.shape[1]
             result = self.person_tracker.detectar_personas(frame, params['confidence'])
             if result is None:
-                # Si no hay detección, mostrar el frame original
                 if params['is_camera']:
                     self.video_display.display_frame(frame)
-                
-                # Combinar frames para salida de video
-                if second_frame is not None and out:
-                    combined_frame = self._combine_frames(frame, second_frame)
-                    out.write(combined_frame)
-                elif out:
-                    out.write(frame)
-                    
+
+                if main_out:
+                    main_out.write(frame)
                 QApplication.processEvents()
                 continue
 
             boxes = result.boxes
             ids_esta_frame = self.person_tracker.extraer_ids(boxes)
+
             primer_id, rastreo_id, reiniciar_coords, frames_perdidos = self.person_tracker.actualizar_rastreo(
                 primer_id, rastreo_id, ids_esta_frame, frames_perdidos, params['frames_espera']
             )
@@ -515,19 +638,28 @@ class MainWindow(QMainWindow):
                 frame_width, controlar_servo=controlar_servo
             )
 
-            # Mostrar el frame anotado en la UI
-            if self.video_display:
-                self.video_display.display_frame(annotated_frame)
-            
-            # Preparar y guardar el frame combinado con ambas cámaras
-            if out:
-                if second_frame is not None:
-                    combined_frame = self._combine_frames(annotated_frame, second_frame)
-                    out.write(combined_frame)
-                else:
-                    out.write(annotated_frame)
-                    
+            self.video_display.display_frame(annotated_frame)
+
+            if main_out:
+                main_out.write(annotated_frame)
+
+            if mobile_out and ultima_coords:
+                x1, y1, x2, y2 = map(int, ultima_coords)
+                h, w = frame.shape[:2]
+                x1 = max(0, x1); y1 = max(0, y1)
+                x2 = min(w, x2); y2 = min(h, y2)
+                if x2 > x1 and y2 > y1:
+                    zoom_frame = frame[y1:y2, x1:x2]
+                    zoom_frame = cv2.resize(zoom_frame, (w, h))
+                    mobile_out.write(zoom_frame)
+
             QApplication.processEvents()
+
+        if main_out:
+            main_out.release()
+        if mobile_out:
+            mobile_out.release()
+
 
     def _combine_frames(self, main_frame, second_frame):
         """

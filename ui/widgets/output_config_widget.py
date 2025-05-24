@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
-    QLabel, QPushButton, QFileDialog, QComboBox, QLineEdit
+    QLabel, QPushButton, QFileDialog, QComboBox, QLineEdit, QCheckBox
 )
 from PyQt6.QtCore import pyqtSignal
 
@@ -50,6 +50,16 @@ class OutputConfigWidget(QWidget):
         
         output_layout.addRow("Formato:", self.codec_combo)
         
+        # NUEVOS CHECKBOXES
+        self.save_main_camera_checkbox = QCheckBox("Guardar cámara principal")
+        self.save_main_camera_checkbox.setChecked(True)
+
+        self.save_mobile_camera_checkbox = QCheckBox("Guardar cámara móvil")
+        self.save_mobile_camera_checkbox.setChecked(False)
+
+        output_layout.addRow(self.save_main_camera_checkbox)
+        output_layout.addRow(self.save_mobile_camera_checkbox)
+
         layout.addWidget(output_group)
     
     def _on_codec_changed(self, codec):
@@ -154,3 +164,9 @@ class OutputConfigWidget(QWidget):
         index = self.codec_combo.findText(codec)
         if index >= 0:
             self.codec_combo.setCurrentIndex(index)
+
+    def should_save_main_camera(self):
+        return self.save_main_camera_checkbox.isChecked()
+
+    def should_save_mobile_camera(self):
+        return self.save_mobile_camera_checkbox.isChecked()
