@@ -6,14 +6,14 @@ import time
 import sys
 import cv2
 import platform
-import logging # Added
+import logging
 from pathlib import Path
 
 if platform.system() == "Windows":
     try:
         from pygrabber.dshow_graph import FilterGraph
     except ImportError:
-        FilterGraph = None # Define as None if import fails
+        FilterGraph = None
         logging.warning("pygrabber no encontrado. Nombres descriptivos de cámara no estarán disponibles en Windows.")
     except Exception as e:
         FilterGraph = None
@@ -25,99 +25,32 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QComboBox, QLineEdit,
     QApplication
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSignal, QStandardPaths # Added QStandardPaths for better default dirs
 
-logger = logging.getLogger(__name__) # Added
+# MODIFIED: Import new CameraThread class
+from .camera_thread import CameraThread
 
-class CameraThread(QThread):
-    """Thread para capturar frames de una cámara en segundo plano."""
-    frame_received = pyqtSignal(object)
-    camera_info_signal = pyqtSignal(str) # Emits (camera_id, info_text)
-    camera_error_signal = pyqtSignal(str) # Emits (camera_id, error_text)
+logger = logging.getLogger(__name__)
 
-    def __init__(self, camera_id_tuple, parent=None): # camera_id_tuple = (id, descriptive_name)
-        super().__init__(parent)
-        self.camera_id = camera_id_tuple[0]
-        self.camera_name = camera_id_tuple[1]
-        self.running = False
-        self.cap = None
-
-    def run(self):
-        try:
-            logger.info(f"Intentando abrir cámara ID {self.camera_id} ({self.camera_name})...")
-            self.cap = cv2.VideoCapture(self.camera_id)
-            if not self.cap.isOpened():
-                err_msg = f"Error: No se pudo abrir la cámara ID {self.camera_id} ({self.camera_name})"
-                logger.error(err_msg)
-                self.camera_error_signal.emit(err_msg)
-                return
-
-            # Get camera info
-            width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = self.cap.get(cv2.CAP_PROP_FPS)
-            if fps <= 0: fps = 30.0 # Default FPS if detection fails
-            info_text = f"{self.camera_name}: {width}x{height} @ {fps:.2f} FPS"
-            logger.info(f"Cámara {self.camera_id} ({self.camera_name}) abierta: {width}x{height} @ {fps:.2f} FPS")
-            self.camera_info_signal.emit(info_text)
-
-            self.running = True
-            while self.running:
-                ret, frame = self.cap.read()
-                if ret:
-                    self.frame_received.emit(frame)
-                else:
-                    # logger.debug(f"Frame no recibido de cámara {self.camera_id}")
-                    self.msleep(30) # Wait a bit if no frame
-
-                # Adjust sleep based on FPS, but ensure it's not too small to hog CPU
-                # and not too large to miss frames. Min sleep 1ms.
-                sleep_duration = max(1, int(1000 / fps) - 15) # Subtract some processing time allowance
-                self.msleep(sleep_duration)
-
-
-        except Exception as e:
-            err_msg = f"Error en CameraThread (ID {self.camera_id}, {self.camera_name}): {str(e)}"
-            logger.error(err_msg, exc_info=True)
-            self.camera_error_signal.emit(err_msg)
-        finally:
-            if self.cap:
-                logger.info(f"Liberando cámara ID {self.camera_id} ({self.camera_name}).")
-                self.cap.release()
-            self.cap = None
-            logger.info(f"CameraThread (ID {self.camera_id}, {self.camera_name}) finalizado.")
-
-
-    def stop(self):
-        logger.info(f"Deteniendo CameraThread para ID {self.camera_id} ({self.camera_name})...")
-        self.running = False
-        if self.isRunning():
-             self.wait(1500) # Increased wait time
-        if self.cap and self.cap.isOpened():
-            logger.info(f"Asegurando liberación de cámara ID {self.camera_id} ({self.camera_name}) al detener.")
-            self.cap.release()
-        self.cap = None
-
+# CameraThread class is now in camera_thread.py
 
 class InputConfigWidget(QWidget):
     """Widget para la configuración de entrada de video (archivo o cámara)."""
 
-    # Señales para comunicar cambios a la ventana principal
-    input_type_changed = pyqtSignal(int) # 0 for file, 1 for camera
-    video_file_selected = pyqtSignal(str) # Path to video file
-    camera_selected = pyqtSignal(int, str) # (camera_id, camera_description) for main camera
-    second_camera_selected = pyqtSignal(int, str) # (camera_id, camera_description) for second camera
-    status_message = pyqtSignal(str, int) # (message, timeout)
-    frame_received = pyqtSignal(object) # Frame from main camera preview
-    second_frame_received = pyqtSignal(object) # Frame from second camera preview
+    input_type_changed = pyqtSignal(int)
+    video_file_selected = pyqtSignal(str)
+    camera_selected = pyqtSignal(int, str)
+    second_camera_selected = pyqtSignal(int, str)
+    status_message = pyqtSignal(str, int)
+    frame_received = pyqtSignal(object)
+    second_frame_received = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.camera_thread = None
         self.second_camera_thread = None
-        self.available_cameras = [] # List of tuples: (id, description)
+        self.available_cameras = []
 
-        # For managing info label text
         self.main_camera_info_str = "N/A"
         self.second_camera_info_str = "N/A"
         self.video_file_info_str = "No hay video seleccionado"
@@ -138,7 +71,6 @@ class InputConfigWidget(QWidget):
         self.input_type_combo.currentIndexChanged.connect(self._on_input_type_changed)
         self.form_layout.addRow("Tipo de entrada:", self.input_type_combo)
 
-        # --- File Panel ---
         self.file_panel_label = QLabel("Archivo:")
         self.file_panel = QWidget()
         file_layout = QHBoxLayout(self.file_panel)
@@ -151,20 +83,19 @@ class InputConfigWidget(QWidget):
         file_layout.addWidget(browse_button)
         self.form_layout.addRow(self.file_panel_label, self.file_panel)
 
-        # --- Main Camera Panel ---
         self.camera_panel_label = QLabel("Cámara Fija:")
         self.camera_panel = QWidget()
         camera_layout = QHBoxLayout(self.camera_panel)
         camera_layout.setContentsMargins(0, 0, 0, 0)
         self.camera_combo = QComboBox()
-        self.camera_combo.setMinimumWidth(180) # Adjusted width
+        self.camera_combo.setMinimumWidth(180)
         self.camera_combo.setToolTip("Seleccione la cámara principal (fija)")
         self.camera_combo.currentIndexChanged.connect(self._on_camera_selection_changed)
         refresh_cameras_button = QPushButton("🔄")
         refresh_cameras_button.setToolTip("Actualizar lista de cámaras")
         refresh_cameras_button.setFixedWidth(30)
         refresh_cameras_button.clicked.connect(self.refresh_cameras)
-        self.test_camera_button = QPushButton("Info") # Shorter Text
+        self.test_camera_button = QPushButton("Info")
         self.test_camera_button.setToolTip("Obtener información y previsualizar cámara fija")
         self.test_camera_button.clicked.connect(self.test_camera_info)
         camera_layout.addWidget(self.camera_combo)
@@ -172,35 +103,36 @@ class InputConfigWidget(QWidget):
         camera_layout.addWidget(self.test_camera_button)
         self.form_layout.addRow(self.camera_panel_label, self.camera_panel)
 
-        # --- Second Camera Panel ---
         self.second_camera_panel_label = QLabel("Cámara Móvil:")
         self.second_camera_panel = QWidget()
         second_camera_layout = QHBoxLayout(self.second_camera_panel)
         second_camera_layout.setContentsMargins(0, 0, 0, 0)
         self.second_camera_combo = QComboBox()
-        self.second_camera_combo.setMinimumWidth(180) # Adjusted width
+        self.second_camera_combo.setMinimumWidth(180)
         self.second_camera_combo.setToolTip("Seleccione la segunda cámara (móvil)")
-        self.second_camera_combo.addItem("Ninguna", -1) # -1 represents no camera
+        self.second_camera_combo.addItem("Ninguna", -1)
         self.second_camera_combo.currentIndexChanged.connect(self._on_second_camera_selection_changed)
-        self.test_second_camera_button = QPushButton("Info") # Shorter Text
+        self.test_second_camera_button = QPushButton("Info")
         self.test_second_camera_button.setToolTip("Obtener información y previsualizar cámara móvil")
         self.test_second_camera_button.clicked.connect(self.test_second_camera_info)
         second_camera_layout.addWidget(self.second_camera_combo)
-        # No refresh button for second cam, uses the main one.
         second_camera_layout.addWidget(self.test_second_camera_button)
         self.form_layout.addRow(self.second_camera_panel_label, self.second_camera_panel)
 
-        # --- Info Label ---
-        self.info_label_qlabel = QLabel("Información:") # The actual QLabel for "Información:" text
-        self.video_info_label = QLabel("No hay entrada seleccionada") # The QLabel that shows the info
+        self.info_label_qlabel = QLabel("Información:")
+        self.video_info_label = QLabel("No hay entrada seleccionada")
         self.video_info_label.setWordWrap(True)
         self.form_layout.addRow(self.info_label_qlabel, self.video_info_label)
 
         layout.addWidget(input_group)
-        self._set_form_row_visible(self.file_panel_label, self.file_panel, True) # Initial state
+        # Set initial visibility based on default input type (usually "Archivo de video")
+        default_is_file_mode = (self.input_type_combo.currentIndex() == 0)
+        self._set_form_row_visible(self.file_panel_label, self.file_panel, default_is_file_mode)
+        self._set_form_row_visible(self.camera_panel_label, self.camera_panel, not default_is_file_mode)
+        self._set_form_row_visible(self.second_camera_panel_label, self.second_camera_panel, not default_is_file_mode)
+
 
     def _set_form_row_visible(self, label_widget, field_widget, visible):
-        """Shows or hides a form row (label and field)."""
         if label_widget: label_widget.setVisible(visible)
         if field_widget: field_widget.setVisible(visible)
 
@@ -216,27 +148,26 @@ class InputConfigWidget(QWidget):
         if is_file_mode:
             self.detener_previsualizacion()
             self.detener_segunda_previsualizacion()
-            self.main_camera_info_str = "N/A" # Reset camera info
+            self.main_camera_info_str = "N/A"
             self.second_camera_info_str = "N/A"
             if self.video_path_edit.text():
-                self.update_video_info(self.video_path_edit.text()) # Updates self.video_file_info_str
+                self.update_video_info(self.video_path_edit.text())
             else:
                 self.video_file_info_str = "No hay video seleccionado"
-        else: # Camera mode
-            self.video_file_info_str = "N/A" # Reset file info
-            if not self.available_cameras: # If cameras list is empty
-                self.refresh_cameras() # Attempt to populate
+        else:
+            self.video_file_info_str = "N/A"
+            if not self.available_cameras:
+                self.refresh_cameras()
 
-            # Trigger selection change if cameras are available to start preview
             if self.camera_combo.count() > 0:
                  self._on_camera_selection_changed(self.camera_combo.currentIndex())
-            else: # No cameras listed in combo
+            else:
                  self.main_camera_info_str = "Ninguna cámara fija disponible"
                  self.frame_received.emit(None)
 
-            if self.second_camera_combo.count() > 0 : # At least "Ninguna" is present
+            if self.second_camera_combo.count() > 0 :
                  self._on_second_camera_selection_changed(self.second_camera_combo.currentIndex())
-            else: # Should not happen if "Ninguna" is always added
+            else:
                  self.second_camera_info_str = "Ninguna cámara móvil disponible"
                  self.second_frame_received.emit(None)
 
@@ -245,17 +176,26 @@ class InputConfigWidget(QWidget):
 
 
     def _browse_video_file(self):
+        # Suggest directory from user's documents/videos directory or last used
+        documents_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        videos_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+        start_dir = videos_path or documents_path or ""
+
+        current_file = self.video_path_edit.text()
+        if current_file and os.path.exists(os.path.dirname(current_file)):
+            start_dir = os.path.dirname(current_file)
+
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar video", "",
+            self, "Seleccionar video", start_dir,
             "Archivos de video (*.mp4 *.avi *.mov *.mkv);;Todos los archivos (*)"
         )
         if file_path:
             self.video_path_edit.setText(file_path)
-            self.update_video_info(file_path) # This will set self.video_file_info_str
+            self.update_video_info(file_path)
             self._update_combined_video_info_label()
-            self.detener_previsualizacion() # Stop camera previews if running
+            self.detener_previsualizacion()
             self.detener_segunda_previsualizacion()
-            self.frame_received.emit(None) # Clear preview frames
+            self.frame_received.emit(None)
             self.second_frame_received.emit(None)
             self.video_file_selected.emit(file_path)
             logger.info(f"Archivo de video seleccionado: {file_path}")
@@ -288,16 +228,15 @@ class InputConfigWidget(QWidget):
 
 
     def _update_combined_video_info_label(self):
-        """Updates the main info label based on current mode and info strings."""
-        if self.input_type_combo.currentIndex() == 0: # File mode
+        if self.input_type_combo.currentIndex() == 0:
             self.video_info_label.setText(self.video_file_info_str)
             self.info_label_qlabel.setText("Info Archivo:")
-        else: # Camera mode
+        else:
             self.info_label_qlabel.setText("Info Cámaras:")
             parts = []
             if self.main_camera_info_str and self.main_camera_info_str != "N/A":
                 parts.append(f"Fija: {self.main_camera_info_str}")
-            if self.second_camera_info_str and self.second_camera_info_str != "N/A" and self.second_camera_combo.currentIndex() > 0: # Only show if not "Ninguna"
+            if self.second_camera_info_str and self.second_camera_info_str != "N/A" and self.second_camera_combo.currentIndex() > 0:
                 parts.append(f"Móvil: {self.second_camera_info_str}")
 
             if not parts:
@@ -307,34 +246,34 @@ class InputConfigWidget(QWidget):
 
 
     def _on_camera_selection_changed(self, index):
-        if index < 0 or self.camera_combo.count() == 0: # No item selected or combo empty
+        if index < 0 or self.camera_combo.count() == 0:
             self.detener_previsualizacion()
             self.main_camera_info_str = "Ninguna cámara fija seleccionada."
             self._update_combined_video_info_label()
             self.frame_received.emit(None)
+            self.camera_selected.emit(-1, "Ninguna") # Emit no camera
             return
 
         camera_data = self.camera_combo.itemData(index)
         camera_text = self.camera_combo.itemText(index)
 
-        if camera_data is None: # Should not happen if items always have data
+        if camera_data is None:
             logger.warning("Item de cámara sin datos.")
+            self.camera_selected.emit(-1, "Error en datos")
             return
 
-        camera_id = camera_data # Assuming data is the ID
+        camera_id = camera_data
 
-        # Check for conflict with second camera
         second_cam_data = self.second_camera_combo.currentData()
-        if second_cam_data is not None and second_cam_data == camera_id and self.second_camera_combo.currentIndex() > 0 : # currentIndex > 0 means not "Ninguna"
+        if second_cam_data is not None and second_cam_data == camera_id and self.second_camera_combo.currentIndex() > 0 :
             msg = "Conflicto: La cámara fija no puede ser la misma que la móvil si ambas están activas."
             self.status_message.emit(msg, 4000)
             logger.warning(msg)
-            # Do not start preview, revert or clear selection if needed by UX design
-            # For now, just display message and potentially stop existing preview
             self.detener_previsualizacion()
             self.main_camera_info_str = "Error: Conflicto de cámaras"
             self._update_combined_video_info_label()
             self.frame_received.emit(None)
+            self.camera_selected.emit(camera_id, f"{camera_text} (Conflicto)")
             return
 
         self.iniciar_previsualizacion_camara((camera_id, camera_text))
@@ -342,11 +281,12 @@ class InputConfigWidget(QWidget):
 
 
     def _on_second_camera_selection_changed(self, index):
-        if index < 0 or self.second_camera_combo.count() == 0: # Combo empty (should not happen)
+        if index < 0 or self.second_camera_combo.count() == 0:
             self.detener_segunda_previsualizacion()
             self.second_camera_info_str = "Ninguna cámara móvil seleccionada."
             self._update_combined_video_info_label()
             self.second_frame_received.emit(None)
+            self.second_camera_selected.emit(-1, "Ninguna")
             return
 
         camera_data = self.second_camera_combo.itemData(index)
@@ -354,19 +294,19 @@ class InputConfigWidget(QWidget):
 
         if camera_data is None :
              logger.warning("Item de segunda cámara sin datos.")
+             self.second_camera_selected.emit(-1, "Error en datos")
              return
 
         camera_id = camera_data
 
-        if camera_id == -1: # "Ninguna" selected
+        if camera_id == -1:
             self.detener_segunda_previsualizacion()
-            self.second_camera_info_str = "N/A" # Reset specific info string
+            self.second_camera_info_str = "N/A"
             self._update_combined_video_info_label()
             self.second_frame_received.emit(None)
             self.second_camera_selected.emit(-1, "Ninguna")
             return
 
-        # Check for conflict with main camera
         main_cam_data = self.camera_combo.currentData()
         if main_cam_data is not None and main_cam_data == camera_id:
             msg = "Conflicto: La cámara móvil no puede ser la misma que la fija si ambas están activas."
@@ -376,15 +316,16 @@ class InputConfigWidget(QWidget):
             self.second_camera_info_str = "Error: Conflicto de cámaras"
             self._update_combined_video_info_label()
             self.second_frame_received.emit(None)
+            self.second_camera_selected.emit(camera_id, f"{camera_text} (Conflicto)")
             return
 
         self.iniciar_segunda_previsualizacion_camara((camera_id, camera_text))
         self.second_camera_selected.emit(camera_id, camera_text)
 
 
-    def iniciar_previsualizacion_camara(self, camera_id_tuple): # (id, description)
+    def iniciar_previsualizacion_camara(self, camera_id_tuple):
         self.detener_previsualizacion()
-        self.camera_thread = CameraThread(camera_id_tuple)
+        self.camera_thread = CameraThread(camera_id_tuple, self) # Pass self as parent
         self.camera_thread.frame_received.connect(self._on_frame_received)
         self.camera_thread.camera_info_signal.connect(self._update_main_camera_info_from_thread)
         self.camera_thread.camera_error_signal.connect(self._handle_main_camera_error_from_thread)
@@ -394,9 +335,9 @@ class InputConfigWidget(QWidget):
         self.status_message.emit(f"Iniciando previsualización de {camera_id_tuple[1]} (fija)", 2000)
 
 
-    def iniciar_segunda_previsualizacion_camara(self, camera_id_tuple): # (id, description)
+    def iniciar_segunda_previsualizacion_camara(self, camera_id_tuple):
         self.detener_segunda_previsualizacion()
-        self.second_camera_thread = CameraThread(camera_id_tuple)
+        self.second_camera_thread = CameraThread(camera_id_tuple, self) # Pass self as parent
         self.second_camera_thread.frame_received.connect(self._on_second_frame_received)
         self.second_camera_thread.camera_info_signal.connect(self._update_second_camera_info_from_thread)
         self.second_camera_thread.camera_error_signal.connect(self._handle_second_camera_error_from_thread)
@@ -406,11 +347,9 @@ class InputConfigWidget(QWidget):
         self.status_message.emit(f"Iniciando previsualización de {camera_id_tuple[1]} (móvil)", 2000)
 
 
-    @pyqtSlot(object)
     def _on_frame_received(self, frame):
         self.frame_received.emit(frame)
 
-    @pyqtSlot(object)
     def _on_second_frame_received(self, frame):
         self.second_frame_received.emit(frame)
 
@@ -426,19 +365,18 @@ class InputConfigWidget(QWidget):
         self.main_camera_info_str = f"Error: {error_text}"
         self._update_combined_video_info_label()
         self.status_message.emit(f"Error Cámara Fija: {error_text}", 5000)
-        self.frame_received.emit(None) # Clear preview
+        self.frame_received.emit(None)
 
     def _handle_second_camera_error_from_thread(self, error_text):
         self.second_camera_info_str = f"Error: {error_text}"
         self._update_combined_video_info_label()
         self.status_message.emit(f"Error Cámara Móvil: {error_text}", 5000)
-        self.second_frame_received.emit(None) # Clear preview
+        self.second_frame_received.emit(None)
 
     def detener_previsualizacion(self):
         if self.camera_thread:
             logger.info("Deteniendo previsualización de cámara principal.")
             self.camera_thread.stop()
-            # Attempt to disconnect, but catch TypeError if already disconnected or never connected
             try: self.camera_thread.frame_received.disconnect(self._on_frame_received)
             except TypeError: pass
             try: self.camera_thread.camera_info_signal.disconnect(self._update_main_camera_info_from_thread)
@@ -446,8 +384,6 @@ class InputConfigWidget(QWidget):
             try: self.camera_thread.camera_error_signal.disconnect(self._handle_main_camera_error_from_thread)
             except TypeError: pass
             self.camera_thread = None
-            # self.main_camera_info_str = "N/A" # Reset info when explicitly stopped
-            # self._update_combined_video_info_label()
 
 
     def detener_segunda_previsualizacion(self):
@@ -461,25 +397,22 @@ class InputConfigWidget(QWidget):
             try: self.second_camera_thread.camera_error_signal.disconnect(self._handle_second_camera_error_from_thread)
             except TypeError: pass
             self.second_camera_thread = None
-            # self.second_camera_info_str = "N/A"
-            # self._update_combined_video_info_label()
 
 
     def detect_available_cameras(self, max_cameras=5):
-        available_cameras = [] # List of (id, description)
+        available_cameras = []
         logger.info("Detectando cámaras disponibles...")
 
         if platform.system() == "Windows" and FilterGraph is not None:
             try:
                 graph = FilterGraph()
-                device_names = graph.get_input_devices() # Names from pygrabber
+                device_names = graph.get_input_devices()
                 logger.info(f"pygrabber encontró dispositivos: {device_names}")
 
-                # Check if these devices are valid video capture devices
                 valid_pygrabber_cameras = []
                 for i, name in enumerate(device_names):
                     if len(valid_pygrabber_cameras) >= max_cameras: break
-                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW) # Try with DSHOW backend specifically
+                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
                     if cap.isOpened():
                         width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
                         height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
@@ -489,7 +422,7 @@ class InputConfigWidget(QWidget):
                         else:
                              logger.warning(f"pygrabber dispositivo {i} ('{name}') abrió pero devolvió dimensiones 0.")
                     else:
-                        cap.release() # Ensure release
+                        cap.release()
 
                 if valid_pygrabber_cameras:
                     logger.info(f"Cámaras válidas (pygrabber/DSHOW): {valid_pygrabber_cameras}")
@@ -499,7 +432,6 @@ class InputConfigWidget(QWidget):
             except Exception as e:
                 logger.error(f"Error usando pygrabber, recurriendo a método estándar: {e}", exc_info=True)
 
-        # Fallback or non-Windows
         logger.info("Usando método estándar de detección de cámaras.")
         for i in range(max_cameras):
             cap = cv2.VideoCapture(i)
@@ -509,10 +441,10 @@ class InputConfigWidget(QWidget):
                 cap.release()
                 if width > 0 and height > 0:
                     available_cameras.append((i, f"Cámara {i}"))
-                else: # Opened but returned 0 dimensions, might not be a usable camera
+                else:
                     logger.warning(f"Cámara {i} abierta pero devolvió dimensiones 0.")
             else:
-                cap.release() # Ensure it's released even if not opened.
+                cap.release()
         logger.info(f"Cámaras detectadas (estándar): {available_cameras}")
         return available_cameras
 
@@ -521,20 +453,21 @@ class InputConfigWidget(QWidget):
         self.status_message.emit("Buscando cámaras...", 0)
         QApplication.processEvents()
 
-        self.detener_previsualizacion() # Stop current previews before refreshing
+        self.detener_previsualizacion()
         self.detener_segunda_previsualizacion()
         self.frame_received.emit(None)
         self.second_frame_received.emit(None)
 
         self.camera_combo.clear()
         self.second_camera_combo.clear()
-        self.second_camera_combo.addItem("Ninguna", -1) # Add "Ninguna" first
+        self.second_camera_combo.addItem("Ninguna", -1)
 
         self.available_cameras = self.detect_available_cameras(max_cameras=5)
 
         if not self.available_cameras:
-            self.camera_combo.addItem("Cámara 0 (predeterminada)", 0) # Add a default if none found
-            self.status_message.emit("No se detectaron cámaras. Puede intentar con 'Cámara 0'.", 3000)
+            # Add a default placeholder if no cameras are truly detected
+            # self.camera_combo.addItem("Cámara 0 (No Detectada)", 0)
+            self.status_message.emit("No se detectaron cámaras. Verifique las conexiones.", 3000)
             self.main_camera_info_str = "No se detectaron cámaras"
             self.second_camera_info_str = "N/A"
         else:
@@ -545,12 +478,17 @@ class InputConfigWidget(QWidget):
 
         self._update_combined_video_info_label()
 
-        # If in camera mode, try to activate the first camera in the list
         if self.input_type_combo.currentIndex() == 1:
             if self.camera_combo.count() > 0:
-                self.camera_combo.setCurrentIndex(0) # Triggers _on_camera_selection_changed
-            if self.second_camera_combo.count() > 0: # "Ninguna" is at index 0
+                self.camera_combo.setCurrentIndex(0)
+            else: # No cameras in main combo after refresh (even placeholder)
+                self._on_camera_selection_changed(-1) # Explicitly signal no camera
+
+            if self.second_camera_combo.count() > 0:
                 self.second_camera_combo.setCurrentIndex(0) # Default to "Ninguna"
+            else: # Should not happen as "Ninguna" is always added
+                self._on_second_camera_selection_changed(-1)
+
 
     def test_camera_info(self):
         if self.input_type_combo.currentIndex() != 1:
@@ -564,13 +502,12 @@ class InputConfigWidget(QWidget):
         camera_id = self.camera_combo.currentData()
         camera_desc = self.camera_combo.currentText()
 
-        if camera_id is None:
+        if camera_id is None: # Should check for -1 if that's how you represent "no selection" in data
             self.main_camera_info_str = "Ninguna cámara fija seleccionada para probar."
             self._update_combined_video_info_label()
             return
 
         self.status_message.emit(f"Probando {camera_desc} (fija)...", 0)
-        # Re-initiate preview which also gets info
         self.iniciar_previsualizacion_camara((camera_id, camera_desc))
 
 
@@ -580,7 +517,7 @@ class InputConfigWidget(QWidget):
             return
 
         current_idx = self.second_camera_combo.currentIndex()
-        if current_idx <= 0: # "Ninguna" is at index 0, or list is empty
+        if current_idx <= 0:
             self.status_message.emit("Seleccione una cámara móvil (no 'Ninguna') para probar.", 3000)
             self.second_camera_info_str = "N/A"
             self._update_combined_video_info_label()
@@ -589,7 +526,7 @@ class InputConfigWidget(QWidget):
         camera_id = self.second_camera_combo.currentData()
         camera_desc = self.second_camera_combo.currentText()
 
-        if camera_id is None or camera_id == -1: # Should be caught by current_idx check
+        if camera_id is None or camera_id == -1:
             self.second_camera_info_str = "Ninguna cámara móvil seleccionada para probar."
             self._update_combined_video_info_label()
             return
@@ -597,7 +534,6 @@ class InputConfigWidget(QWidget):
         self.status_message.emit(f"Probando {camera_desc} (móvil)...", 0)
         self.iniciar_segunda_previsualizacion_camara((camera_id, camera_desc))
 
-    # --- Public Getters/Setters for MainWindow ---
     def get_input_type(self):
         return self.input_type_combo.currentIndex()
 
@@ -607,19 +543,19 @@ class InputConfigWidget(QWidget):
     def set_video_path(self, path):
         if path:
             self.video_path_edit.setText(path)
-            self.update_video_info(path) # Sets self.video_file_info_str
-            if self.input_type_combo.currentIndex() == 0: # If in file mode
+            self.update_video_info(path)
+            if self.input_type_combo.currentIndex() == 0:
                 self._update_combined_video_info_label()
 
     def get_selected_camera_id(self):
         if self.input_type_combo.currentIndex() == 1 and self.camera_combo.count() > 0:
             return self.camera_combo.currentData()
-        return None
+        return None # Explicitly None if not applicable
 
     def get_selected_second_camera_id(self):
         if self.input_type_combo.currentIndex() == 1 and self.second_camera_combo.count() > 0:
             cam_id = self.second_camera_combo.currentData()
-            return cam_id if cam_id != -1 else None
+            return cam_id if cam_id != -1 else None # Return None if "Ninguna" (-1)
         return None
 
     def get_selected_camera_description(self):
@@ -643,39 +579,54 @@ class InputConfigWidget(QWidget):
 
     def set_all_settings(self, settings_dict):
         input_type = settings_dict.get("input_type", 0)
-        # Critical: Set combo index *before* calling _on_input_type_changed
-        # to ensure it has the correct context.
-        self.input_type_combo.setCurrentIndex(input_type)
-        # _on_input_type_changed will handle visibility and initial camera/file setup
 
-        if input_type == 0: # Archivo
+        # Temporarily disconnect signals to prevent multiple triggers during setup
+        self.input_type_combo.currentIndexChanged.disconnect(self._on_input_type_changed)
+        self.camera_combo.currentIndexChanged.disconnect(self._on_camera_selection_changed)
+        self.second_camera_combo.currentIndexChanged.disconnect(self._on_second_camera_selection_changed)
+
+        self.input_type_combo.setCurrentIndex(input_type)
+
+        if input_type == 0:
             video_path = settings_dict.get("video_path")
             if video_path:
-                self.set_video_path(video_path) # This updates info string and label if in file mode
-        else: # Cámara
-            # Refresh cameras to ensure the saved IDs can be found
-            # self.refresh_cameras() # This might be too disruptive, better to assume they are there
-            # _on_input_type_changed will call refresh if list is empty.
-
+                self.video_path_edit.setText(video_path) # Use setText, not set_video_path to avoid duplicate info update yet
+                self.update_video_info(video_path) # This sets self.video_file_info_str
+        else:
             cam_id_to_set = settings_dict.get("camera_id")
+            found_cam = False
             if cam_id_to_set is not None:
                 for i in range(self.camera_combo.count()):
                     if self.camera_combo.itemData(i) == cam_id_to_set:
                         self.camera_combo.setCurrentIndex(i)
-                        # _on_camera_selection_changed is triggered by setCurrentIndex
+                        found_cam = True
                         break
+                if not found_cam and self.camera_combo.count() > 0: # Cam ID not found, select first available
+                    self.camera_combo.setCurrentIndex(0)
+            elif self.camera_combo.count() > 0: # No cam_id specified, select first
+                 self.camera_combo.setCurrentIndex(0)
 
-            second_cam_id_to_set = settings_dict.get("second_camera_id", -1) # Default to -1 (Ninguna)
+
+            second_cam_id_to_set = settings_dict.get("second_camera_id", -1)
+            found_second_cam = False
             for i in range(self.second_camera_combo.count()):
                 if self.second_camera_combo.itemData(i) == second_cam_id_to_set:
                     self.second_camera_combo.setCurrentIndex(i)
-                    # _on_second_camera_selection_changed is triggered
+                    found_second_cam = True
                     break
-        # Ensure the UI reflects the loaded settings correctly after all changes
+            if not found_second_cam and self.second_camera_combo.count() > 0: # If not found, default to "Ninguna"
+                self.second_camera_combo.setCurrentIndex(0) # Index 0 is "Ninguna"
+
+        # Reconnect signals
+        self.input_type_combo.currentIndexChanged.connect(self._on_input_type_changed)
+        self.camera_combo.currentIndexChanged.connect(self._on_camera_selection_changed)
+        self.second_camera_combo.currentIndexChanged.connect(self._on_second_camera_selection_changed)
+
+        # Manually trigger the update logic for the current state
         self._on_input_type_changed(self.input_type_combo.currentIndex())
 
 
-    def closeEvent(self, event): # This method is usually for QWidget/QMainWindow, not typically child widgets
+    def closeEvent(self, event):
         logger.info("InputConfigWidget closeEvent called.")
         self.detener_previsualizacion()
         self.detener_segunda_previsualizacion()
