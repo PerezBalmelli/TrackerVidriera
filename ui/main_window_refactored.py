@@ -643,16 +643,8 @@ class MainWindow(QMainWindow):
             if main_out:
                 main_out.write(annotated_frame)
 
-            if mobile_out and ultima_coords:
-                x1, y1, x2, y2 = map(int, ultima_coords)
-                h, w = frame.shape[:2]
-                x1 = max(0, x1); y1 = max(0, y1)
-                x2 = min(w, x2); y2 = min(h, y2)
-                if x2 > x1 and y2 > y1:
-                    zoom_frame = frame[y1:y2, x1:x2]
-                    zoom_frame = cv2.resize(zoom_frame, (w, h))
-                    mobile_out.write(zoom_frame)
-
+            if mobile_out and second_frame is not None:
+                mobile_out.write(second_frame)
             QApplication.processEvents()
 
         if main_out:
