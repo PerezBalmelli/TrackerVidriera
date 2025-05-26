@@ -12,7 +12,7 @@ import logging
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QStatusBar, QApplication, QPushButton
+    QLabel, QStatusBar, QApplication, QPushButton, QMessageBox
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
@@ -29,9 +29,8 @@ from ui.widgets.action_buttons_widget import ActionButtonsWidget
 
 from core.serial_manager import serial_manager
 from core.person_tracking_manager import PersonTrackingManager # Assumed to exist
-from core.video_processing_thread import VideoProcessingThread # MODIFIED: Import new thread class
+from core.video_processing_thread import VideoProcessingThread
 
-# --- Dummy classes for missing imports (as in original) ---
 try:
     from config.settings import settings
     from core.video_output import VideoOutputManager
@@ -44,7 +43,7 @@ except ImportError:
             self.save_mobile_camera = False; self.mobile_output_path = "salida_movil.avi"
             self.serial_port = "COM3"; self.serial_baudrate = 115200; self.serial_enabled = True
             self.config_panel_collapsed = False; self.input_type = 0; self.video_path = None
-            self.camera_id = 0; self.second_camera_id = -1
+            self.camera_id = 0; self.second_camera_id = -1; self.youtube_url = "" # Added dummy youtube_url
         def save_settings(self): logger.info("DummySettings: save_settings called"); return True
         def load_settings(self): logger.info("DummySettings: load_settings called")
     settings = DummySettings()
@@ -57,8 +56,6 @@ except ImportError:
             def get_output_info(self, *args, **kwargs): logger.info("DummyVOM: get_output_info"); return {}
         VideoOutputManager = DummyVideoOutputManager
 
-
-# VideoProcessingThread class is now in core.video_processing_thread
 
 class MainWindow(QMainWindow):
     """Ventana principal de la aplicación TrackerVidriera."""
@@ -151,6 +148,7 @@ class MainWindow(QMainWindow):
     def connect_widget_signals(self):
         self.input_widget.input_type_changed.connect(self.toggle_input_type)
         self.input_widget.video_file_selected.connect(self.on_video_file_selected)
+        self.input_widget.youtube_url_changed.connect(self.on_youtube_url_entered) # Connect new signal
         self.input_widget.status_message.connect(self.show_status_message)
         self.input_widget.frame_received.connect(self.video_display.display_frame)
         self.input_widget.second_frame_received.connect(self.video_display.display_second_frame)
@@ -169,8 +167,11 @@ class MainWindow(QMainWindow):
         )
 
     def _update_ui_for_processing_state(self):
-        is_live_camera_mode = self.input_widget.get_input_type() == 1
-        self.action_buttons.set_processing_mode(self.procesando_flag, is_live_camera_mode)
+        # index: 0 for File, 1 for Camera, 2 for YouTube
+        current_input_type = self.input_widget.get_input_type()
+        is_live_mode = (current_input_type == 1 or current_input_type == 2) # Camera or YouTube is live
+
+        self.action_buttons.set_processing_mode(self.procesando_flag, is_live_mode)
 
         if hasattr(self.config_panel, 'maximumWidth') and self.config_panel.maximumWidth() == 0: # Panel is collapsed
             if self.procesando_flag:
@@ -192,30 +193,53 @@ class MainWindow(QMainWindow):
         self.action_buttons.save_config_button.setEnabled(not self.procesando_flag)
 
 
-    def toggle_input_type(self, index):
+    def toggle_input_type(self, index): # index: 0 for File, 1 for Camera, 2 for YouTube
         is_file_mode = (index == 0)
+        is_camera_mode = (index == 1)
+        is_youtube_mode = (index == 2)
+
         can_process = False
+        process_button_text = "Procesar"
+
         if is_file_mode:
             can_process = bool(self.input_widget.get_video_path())
-        else:
+            process_button_text = "Procesar video"
+        elif is_camera_mode:
             can_process = self.input_widget.get_selected_camera_id() is not None
+            process_button_text = "Procesar en vivo"
+        elif is_youtube_mode:
+            can_process = bool(self.input_widget.get_youtube_url())
+            process_button_text = "Procesar Stream YouTube"
+
 
         self.action_buttons.enable_process_button(
-            enabled=can_process and not self.procesando_flag, # Cannot enable if already processing
-            text="Procesar video" if is_file_mode else "Procesar en vivo"
+            enabled=can_process and not self.procesando_flag,
+            text=process_button_text
         )
         self._update_ui_for_processing_state()
 
 
     def on_video_file_selected(self, file_path):
-        if file_path and self.input_widget.get_input_type() == 0:
+        if file_path and self.input_widget.get_input_type() == 0: # File mode
             self.action_buttons.enable_process_button(True and not self.procesando_flag)
+        else: # Could be called if input type changes while a file was selected
+             if self.input_widget.get_input_type() != 0 : # Not file mode anymore
+                  self.action_buttons.enable_process_button(False or self.procesando_flag)
         self._update_ui_for_processing_state()
+
+    def on_youtube_url_entered(self, url):
+        if self.input_widget.get_input_type() == 2: # YouTube mode
+            if url:
+                self.action_buttons.enable_process_button(True and not self.procesando_flag)
+            else: # URL is empty
+                self.action_buttons.enable_process_button(False or self.procesando_flag)
+        self._update_ui_for_processing_state()
+
 
     def on_main_camera_selected(self, camera_id, camera_description):
         self.show_status_message(f"Cámara principal seleccionada: {camera_description}", 2000)
-        if self.input_widget.get_input_type() == 1:
-            self.action_buttons.enable_process_button(enabled=(camera_id is not None) and not self.procesando_flag)
+        if self.input_widget.get_input_type() == 1: # Camera mode
+            self.action_buttons.enable_process_button(enabled=(camera_id is not None and camera_id != -1) and not self.procesando_flag)
         self._update_ui_for_processing_state()
 
 
@@ -241,7 +265,8 @@ class MainWindow(QMainWindow):
             "input_type": getattr(settings, 'input_type', 0),
             "video_path": getattr(settings, 'video_path', None),
             "camera_id": getattr(settings, 'camera_id', 0),
-            "second_camera_id": getattr(settings, 'second_camera_id', -1)
+            "second_camera_id": getattr(settings, 'second_camera_id', -1),
+            "youtube_url": getattr(settings, 'youtube_url', "")
         })
 
         self.model_widget.set_model_path(getattr(settings, 'model_path', "yolov8n.pt"))
@@ -262,24 +287,21 @@ class MainWindow(QMainWindow):
 
 
     def _apply_panel_state_from_settings(self):
-        # Ensure config_panel_width is initialized
         if not hasattr(self, 'config_panel_width') or self.config_panel_width <= 0:
-            # Attempt to get current width if panel exists and is visible, otherwise default
             if hasattr(self, 'config_panel') and self.config_panel and self.config_panel.isVisible():
                 current_w = self.config_panel.width()
-                self.config_panel_width = current_w if current_w > 50 else 300 # Ensure a minimum sensible width
+                self.config_panel_width = current_w if current_w > 50 else 300
             else:
                 self.config_panel_width = 300
 
         is_collapsed_setting = getattr(settings, 'config_panel_collapsed', False)
 
-        # Ensure UI elements exist before manipulating
         if hasattr(self, 'config_panel') and self.config_panel:
             if is_collapsed_setting:
-                if self.config_panel.maximumWidth() > 0: # If not already collapsed
+                if self.config_panel.maximumWidth() > 0:
                     self.collapse_config_panel(animate=False)
             else:
-                if self.config_panel.maximumWidth() == 0: # If currently collapsed
+                if self.config_panel.maximumWidth() == 0:
                     self.expand_config_panel(animate=False)
         self._update_ui_for_processing_state()
 
@@ -291,6 +313,7 @@ class MainWindow(QMainWindow):
         settings.video_path = input_settings.get("video_path")
         settings.camera_id = input_settings.get("camera_id")
         settings.second_camera_id = input_settings.get("second_camera_id")
+        settings.youtube_url = input_settings.get("youtube_url")
 
         settings.model_path = self.model_widget.get_model_path()
         settings.confidence_threshold = self.model_widget.get_confidence()
@@ -318,7 +341,7 @@ class MainWindow(QMainWindow):
 
     def _get_processing_parameters(self):
         params = {}
-        params['model_name'] = self.model_widget.get_model_path() # Store name for messages
+        params['model_name'] = self.model_widget.get_model_path()
         params['confidence'] = self.model_widget.get_confidence()
         params['frames_espera'] = self.model_widget.get_frames_wait()
 
@@ -327,14 +350,16 @@ class MainWindow(QMainWindow):
         params['save_main'] = self.output_widget.should_save_main_camera()
         params['save_mobile'] = self.output_widget.should_save_mobile_camera()
         params['mobile_output_path'] = self.output_widget.get_mobile_output_path()
-        params['mobile_codec'] = params['codec']
+        params['mobile_codec'] = params['codec'] # Assuming same codec for mobile for now
 
-        params['is_camera'] = (self.input_widget.get_input_type() == 1)
+        input_type = self.input_widget.get_input_type() # 0: File, 1: Camera, 2: YouTube
+        params['is_camera'] = (input_type == 1)
+        params['is_youtube'] = (input_type == 2)
 
         if params['is_camera']:
             params['video_path'] = self.input_widget.get_selected_camera_id()
             params['video_path_display'] = self.input_widget.get_selected_camera_description()
-            if params['video_path'] is None:
+            if params['video_path'] is None: # Should also check for -1 if that is an invalid ID
                 self.show_status_message("Error: Cámara principal no seleccionada para procesamiento.", 3000)
                 return None
 
@@ -343,8 +368,21 @@ class MainWindow(QMainWindow):
                 params['second_camera_id'] = second_cam_id
                 params['second_camera_display'] = self.input_widget.get_selected_second_camera_description()
             else:
-                params['second_camera_id'] = None # Explicitly set to None
-        else:
+                params['second_camera_id'] = None
+        elif params['is_youtube']:
+            youtube_url = self.input_widget.get_youtube_url()
+            if not youtube_url:
+                self.show_status_message("Error: URL de YouTube no ingresada para procesamiento.", 3000)
+                return None
+            # Basic validation, pafy will do more thorough checks
+            if not (youtube_url.startswith("http://") or youtube_url.startswith("https://")) or "youtube.com/" not in youtube_url:
+                 self.show_status_message(f"Error: URL de YouTube parece inválida: {youtube_url}", 4000)
+                 return None
+            params['video_path'] = youtube_url
+            params['video_path_display'] = f"YouTube: {youtube_url[:40]}..."
+            # Ensure is_camera is False for YouTube
+            params['is_camera'] = False
+        else: # File mode
             video_file_path_str = self.input_widget.get_video_path()
             if not video_file_path_str:
                 self.show_status_message("Error: Archivo de video no seleccionado para procesamiento.", 3000)
@@ -356,15 +394,11 @@ class MainWindow(QMainWindow):
             params['video_path'] = str(video_file_path)
             params['video_path_display'] = video_file_path.name
 
-        # Resolve model path (using the name from model_widget)
+        # Resolve model path
         model_filename = self.model_widget.get_model_path()
-        # Prioritize models directory relative to where main_window_refactored.py is (ui/)
-        # Assuming structure: project_root/ui/main_window_refactored.py and project_root/models/
         project_root_models_dir = Path(__file__).resolve().parent.parent / "models"
-
         model_path_actual = project_root_models_dir / model_filename
         if not (model_path_actual.exists() and model_path_actual.is_file()):
-            # Fallback: check if model_filename is an absolute path or relative to CWD
             model_path_actual_alt = Path(model_filename)
             if model_path_actual_alt.exists() and model_path_actual_alt.is_file():
                 model_path_actual = model_path_actual_alt
@@ -373,12 +407,10 @@ class MainWindow(QMainWindow):
                 logger.error(f"Modelo '{model_filename}' no encontrado. Verificado en: {project_root_models_dir / model_filename} y como ruta directa/relativa.")
                 return None
         params['model_path'] = str(model_path_actual)
-        params['model_name_resolved'] = model_path_actual.name # For messages if needed
+        params['model_name_resolved'] = model_path_actual.name
 
-        params['serial_port'] = self.serial_widget.get_serial_port() # Can be None
+        params['serial_port'] = self.serial_widget.get_serial_port()
         params['serial_baudrate'] = self.serial_widget.get_baudrate()
-        # serial_enabled for processing is handled by serial_widget passed to thread constructor
-
         return params
 
     def start_processing_video(self):
@@ -391,14 +423,28 @@ class MainWindow(QMainWindow):
             self.show_status_message("Parámetros de procesamiento inválidos. No se puede iniciar.", 4000)
             return
 
+        # For File or YouTube streams, saving output might be desired.
+        # If it's not a camera, and no save option is selected, show a message.
         if not params['is_camera'] and not params.get('save_main') and not params.get('save_mobile'):
-            self.show_status_message("Modo Archivo: Debe seleccionar al menos una salida de video para guardar.", 4000)
+            mode_text = "Modo Archivo"
+            if params.get('is_youtube', False):
+                mode_text = "Modo YouTube Stream"
+
+            # Optional: For YouTube, you might decide not to enforce saving.
+            # If so, you can bypass this check for YouTube:
+            # if params.get('is_youtube', False) and (not params.get('save_main') and not params.get('save_mobile')):
+            #    logger.info("Procesando stream de YouTube sin guardar salida.")
+            # else:
+            #    self.show_status_message(f"{mode_text}: Debe seleccionar al menos una salida de video para guardar.", 4000)
+            #    return
+            self.show_status_message(f"{mode_text}: Debe seleccionar al menos una salida de video para guardar.", 4000)
             return
 
-        if self.serial_widget.is_serial_enabled() and not params['serial_port']:
-            # Log warning, but allow processing to continue. Thread will handle non-connection.
+
+        if self.serial_widget.is_serial_enabled() and not params['serial_port'] and params['is_camera']:
+            # Only warn about serial for camera mode if servo is expected
             logger.warning("Serial habilitado pero sin puerto seleccionado; control servo no funcionará.")
-            self.show_status_message("Advertencia: Serial activado pero no hay puerto COM seleccionado.", 4000)
+            self.show_status_message("Advertencia: Serial activado pero no hay puerto COM seleccionado (control servo no funcionará).", 4000)
 
 
         self.procesando_flag = True
@@ -411,7 +457,6 @@ class MainWindow(QMainWindow):
         logger.info(f"Iniciando procesamiento con parámetros: {params}")
 
         try:
-            # Ensure PersonTrackingManager is robust for re-initialization if needed
             self.person_tracker.inicializar_modelo(str(params['model_path']))
             if hasattr(self.person_tracker, 'detector') and self.person_tracker.detector:
                  self.person_tracker.detector.set_confidence(params['confidence'])
@@ -420,8 +465,8 @@ class MainWindow(QMainWindow):
         except Exception as e_model:
             self.show_status_message(f"Error al inicializar modelo: {e_model}", 5000)
             logger.error(f"Error al inicializar modelo: {e_model}", exc_info=True)
-            self.procesando_flag = False # Reset flag
-            self._update_ui_for_processing_state() # Update UI
+            self.procesando_flag = False
+            self._update_ui_for_processing_state()
             return
 
         self.input_widget.detener_previsualizacion()
@@ -459,35 +504,36 @@ class MainWindow(QMainWindow):
     def _handle_processing_error(self, error_message):
         self.show_status_message(f"Error en procesamiento: {error_message}", 7000)
         logger.error(f"Thread de procesamiento reportó error: {error_message}")
-        # Flag and UI state will be handled by _on_thread_actually_finished,
-        # which is connected to thread's 'finished' signal, emitted even on error exits.
-        # No need to call stop_processing_video here as thread termination handles it.
+
 
     def _on_thread_actually_finished(self):
         logger.info("QThread 'finished' signal received (procesamiento terminado o detenido).")
         self.procesando_flag = False
         self._update_ui_for_processing_state()
-        self.processing_thread = None
+        # self.processing_thread = None # Keep reference until explicitly stopped or replaced
 
-        if self.input_widget.get_input_type() == 1: # Camera mode
-            # Only restart previews if the application is not closing
+        # Only restart previews if not processing and it was camera mode
+        if not self.procesando_flag and self.input_widget.get_input_type() == 1: # Camera mode
             if self.isVisible():
-                # Delay slightly to ensure processing thread resources are fully clear
                 QTimer.singleShot(200, lambda: self.input_widget.test_camera_info() if self.input_widget.get_selected_camera_id() is not None else None)
                 if self.input_widget.get_selected_second_camera_id() is not None:
                     QTimer.singleShot(400, lambda: self.input_widget.test_second_camera_info() if self.input_widget.get_selected_second_camera_id() is not None else None)
 
 
-    def stop_processing_video(self): # Renamed from is_error_stop
+    def stop_processing_video(self):
         if self.processing_thread and self.processing_thread.isRunning():
             logger.info("Enviando señal de detención al thread de procesamiento...")
             self.processing_thread.stop()
-            # UI state will be updated via _on_thread_actually_finished when thread truly stops.
-        elif self.procesando_flag: # Flag is set but thread is not running (e.g. error before start)
-             logger.info("Flag de procesamiento activo pero thread no corre. Reseteando UI.")
+            # Do not nullify self.processing_thread here, wait for its 'finished' signal
+            # UI state will be updated via _on_thread_actually_finished.
+            self.show_status_message("Deteniendo procesamiento...", 0)
+        elif self.procesando_flag:
+             logger.info("Flag de procesamiento activo pero thread no corre o ya parado. Reseteando UI.")
              self._on_thread_actually_finished() # Manually trigger cleanup/UI reset
+             self.show_status_message("Procesamiento detenido.", 3000)
+        else:
+            self.show_status_message("No hay procesamiento en curso para detener.", 3000)
 
-        self.show_status_message("Procesamiento detenido.", 3000)
 
         is_collapsed_by_setting = getattr(settings, 'config_panel_collapsed', False)
         is_auto_collapsed_by_resize = hasattr(self, 'auto_collapsed_due_to_resize') and self.auto_collapsed_due_to_resize
@@ -511,20 +557,19 @@ class MainWindow(QMainWindow):
 
     def collapse_config_panel(self, animate=True):
         if not hasattr(self, 'config_panel'): return
-        if self.config_panel.maximumWidth() == 0:
+        if self.config_panel.maximumWidth() == 0: # Already collapsed
             self._update_ui_for_processing_state()
             if hasattr(self, 'expand_button') and self.expand_button: self.expand_button.show()
             if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.hide()
             return
 
         current_width = self.config_panel.width()
-        if current_width > 0: self.config_panel_width = current_width
+        if current_width > 0: self.config_panel_width = current_width # Save current width before collapsing
 
-        # Ensure expand_button is created before animation starts
         if not hasattr(self, 'expand_button') or not self.expand_button:
             self.expand_button = QPushButton(">")
             self.expand_button.setFixedSize(20, 60)
-            self.expand_button.clicked.connect(lambda: self.expand_config_panel(animate=True)) # Ensure expand is animated
+            self.expand_button.clicked.connect(lambda: self.expand_config_panel(animate=True))
             self.expand_button.setToolTip("Expandir panel (Ctrl+B)")
             self.expand_button.setStyleSheet("""
                 QPushButton { background-color: #f0f0f0; border: 1px solid #ccc; border-left: none;
@@ -533,49 +578,56 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'content_layout'):
                 self.content_layout.insertWidget(0, self.expand_button, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
+        self.expand_button.show() # Show immediately before animation
+        if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.hide()
+
+
         if animate:
-            self.animation_collapse = QPropertyAnimation(self.config_panel, b"maximumWidth") # Use different animation object names
+            self.animation_collapse = QPropertyAnimation(self.config_panel, b"maximumWidth")
             self.animation_collapse.setDuration(300)
-            self.animation_collapse.setStartValue(self.config_panel_width if current_width == 0 else current_width)
+            self.animation_collapse.setStartValue(self.config_panel_width if self.config_panel_width > 0 else current_width)
             self.animation_collapse.setEndValue(0)
             self.animation_collapse.setEasingCurve(QEasingCurve.Type.OutQuad)
             self.animation_collapse.finished.connect(self._update_ui_for_processing_state)
-            self.animation_collapse.finished.connect(lambda: self.expand_button.show() if self.expand_button else None)
-            self.animation_collapse.finished.connect(lambda: self.manual_collapse_button.hide() if self.manual_collapse_button else None)
+            # self.animation_collapse.finished.connect(lambda: self.expand_button.show() if hasattr(self, 'expand_button') and self.expand_button else None)
+            # self.animation_collapse.finished.connect(lambda: self.manual_collapse_button.hide() if hasattr(self, 'manual_collapse_button') else None)
             self.animation_collapse.start()
         else:
             self.config_panel.setMaximumWidth(0)
             self._update_ui_for_processing_state()
-            if self.expand_button: self.expand_button.show()
-            if self.manual_collapse_button: self.manual_collapse_button.hide()
+            # if hasattr(self, 'expand_button') and self.expand_button: self.expand_button.show()
+            # if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.hide()
 
 
     def expand_config_panel(self, animate=True):
         if not hasattr(self, 'config_panel'): return
         target_width = getattr(self, 'config_panel_width', 300)
-        if target_width <=0 : target_width = 300
+        if target_width <=0 : target_width = 300 # Ensure a sensible minimum
 
-        if self.config_panel.maximumWidth() >= target_width and self.config_panel.isVisible():
+        if self.config_panel.maximumWidth() >= target_width and self.config_panel.isVisible(): # Already expanded
              self._update_ui_for_processing_state()
              if hasattr(self, 'expand_button') and self.expand_button: self.expand_button.hide()
              if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.show()
              return
 
+        if hasattr(self, 'expand_button') and self.expand_button: self.expand_button.hide()
+        if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.show()
+
         if animate:
-            self.animation_expand = QPropertyAnimation(self.config_panel, b"maximumWidth") # Use different animation object names
+            self.animation_expand = QPropertyAnimation(self.config_panel, b"maximumWidth")
             self.animation_expand.setDuration(300)
-            self.animation_expand.setStartValue(self.config_panel.maximumWidth())
+            self.animation_expand.setStartValue(self.config_panel.maximumWidth()) # Start from current (likely 0)
             self.animation_expand.setEndValue(target_width)
             self.animation_expand.setEasingCurve(QEasingCurve.Type.OutQuad)
             self.animation_expand.finished.connect(self._update_ui_for_processing_state)
-            self.animation_expand.finished.connect(lambda: self.expand_button.hide() if self.expand_button else None)
-            self.animation_expand.finished.connect(lambda: self.manual_collapse_button.show() if self.manual_collapse_button else None)
+            # self.animation_expand.finished.connect(lambda: self.expand_button.hide() if hasattr(self, 'expand_button') and self.expand_button else None)
+            # self.animation_expand.finished.connect(lambda: self.manual_collapse_button.show() if hasattr(self, 'manual_collapse_button') else None)
             self.animation_expand.start()
         else:
             self.config_panel.setMaximumWidth(target_width)
             self._update_ui_for_processing_state()
-            if hasattr(self, 'expand_button') and self.expand_button: self.expand_button.hide()
-            if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.show()
+            # if hasattr(self, 'expand_button') and self.expand_button: self.expand_button.hide()
+            # if hasattr(self, 'manual_collapse_button'): self.manual_collapse_button.show()
 
 
     def closeEvent(self, event):
@@ -584,11 +636,13 @@ class MainWindow(QMainWindow):
             self.input_widget.detener_previsualizacion()
             self.input_widget.detener_segunda_previsualizacion()
 
-        self.stop_processing_video()
+        self.stop_processing_video() # Request stop
         if self.processing_thread and self.processing_thread.isRunning():
             logger.info("Esperando que el thread de procesamiento finalice antes de cerrar...")
             if not self.processing_thread.wait(2000): # Wait up to 2 seconds
                  logger.warning("El thread de procesamiento no finalizó a tiempo. Forzando salida.")
+
+        self.processing_thread = None # Clear reference after attempts to stop and wait
 
         super().closeEvent(event)
 
@@ -596,13 +650,15 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if not hasattr(self, 'config_panel'): return
 
+        # Auto-collapse logic (same as before)
         if self.width() < 900 and not self.procesando_flag:
-            if self.config_panel.maximumWidth() > 0 :
-                self.collapse_config_panel()
+            if self.config_panel.maximumWidth() > 0 : # Is expanded or expanding
+                self.collapse_config_panel() # Use the main method which handles animation/state
                 self.auto_collapsed_due_to_resize = True
         elif self.width() >= 900 and hasattr(self, 'auto_collapsed_due_to_resize') and self.auto_collapsed_due_to_resize and not self.procesando_flag:
+            # Only expand if it was auto-collapsed and settings don't say it should be collapsed
             if self.config_panel.maximumWidth() == 0 and not getattr(settings, 'config_panel_collapsed', False):
-                self.expand_config_panel()
+                self.expand_config_panel() # Use the main method
             if hasattr(self, 'auto_collapsed_due_to_resize'): # Check again before deleting
                 delattr(self, 'auto_collapsed_due_to_resize')
 

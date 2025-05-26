@@ -25,20 +25,18 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QComboBox, QLineEdit,
     QApplication
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QStandardPaths # Added QStandardPaths for better default dirs
+from PyQt6.QtCore import Qt, pyqtSignal, QStandardPaths
 
-# MODIFIED: Import new CameraThread class
 from .camera_thread import CameraThread
 
 logger = logging.getLogger(__name__)
 
-# CameraThread class is now in camera_thread.py
-
 class InputConfigWidget(QWidget):
-    """Widget para la configuración de entrada de video (archivo o cámara)."""
+    """Widget para la configuración de entrada de video (archivo, cámara o YouTube)."""
 
     input_type_changed = pyqtSignal(int)
     video_file_selected = pyqtSignal(str)
+    youtube_url_changed = pyqtSignal(str) # New signal for YouTube URL
     camera_selected = pyqtSignal(int, str)
     second_camera_selected = pyqtSignal(int, str)
     status_message = pyqtSignal(str, int)
@@ -54,7 +52,7 @@ class InputConfigWidget(QWidget):
         self.main_camera_info_str = "N/A"
         self.second_camera_info_str = "N/A"
         self.video_file_info_str = "No hay video seleccionado"
-
+        self.youtube_url_info_str = "No hay URL de YouTube" # New info string
 
         self._init_ui()
         self._on_input_type_changed(self.input_type_combo.currentIndex())
@@ -67,10 +65,12 @@ class InputConfigWidget(QWidget):
         self.form_layout = QFormLayout(input_group)
 
         self.input_type_combo = QComboBox()
-        self.input_type_combo.addItems(["Archivo de video", "Cámara en vivo"])
+        # Added "YouTube Stream"
+        self.input_type_combo.addItems(["Archivo de video", "Cámara en vivo", "YouTube Stream"])
         self.input_type_combo.currentIndexChanged.connect(self._on_input_type_changed)
         self.form_layout.addRow("Tipo de entrada:", self.input_type_combo)
 
+        # File Panel
         self.file_panel_label = QLabel("Archivo:")
         self.file_panel = QWidget()
         file_layout = QHBoxLayout(self.file_panel)
@@ -83,6 +83,19 @@ class InputConfigWidget(QWidget):
         file_layout.addWidget(browse_button)
         self.form_layout.addRow(self.file_panel_label, self.file_panel)
 
+        # YouTube Panel (New)
+        self.youtube_panel_label = QLabel("URL YouTube:")
+        self.youtube_panel = QWidget()
+        youtube_layout = QHBoxLayout(self.youtube_panel)
+        youtube_layout.setContentsMargins(0,0,0,0)
+        self.youtube_url_edit = QLineEdit()
+        self.youtube_url_edit.setPlaceholderText("Ej: https://www.youtube.com/watch?v=...")
+        self.youtube_url_edit.textChanged.connect(self._on_youtube_url_changed)
+        youtube_layout.addWidget(self.youtube_url_edit)
+        self.form_layout.addRow(self.youtube_panel_label, self.youtube_panel)
+
+
+        # Camera Panel
         self.camera_panel_label = QLabel("Cámara Fija:")
         self.camera_panel = QWidget()
         camera_layout = QHBoxLayout(self.camera_panel)
@@ -103,6 +116,7 @@ class InputConfigWidget(QWidget):
         camera_layout.addWidget(self.test_camera_button)
         self.form_layout.addRow(self.camera_panel_label, self.camera_panel)
 
+        # Second Camera Panel
         self.second_camera_panel_label = QLabel("Cámara Móvil:")
         self.second_camera_panel = QWidget()
         second_camera_layout = QHBoxLayout(self.second_camera_panel)
@@ -125,11 +139,14 @@ class InputConfigWidget(QWidget):
         self.form_layout.addRow(self.info_label_qlabel, self.video_info_label)
 
         layout.addWidget(input_group)
-        # Set initial visibility based on default input type (usually "Archivo de video")
         default_is_file_mode = (self.input_type_combo.currentIndex() == 0)
+        default_is_camera_mode = (self.input_type_combo.currentIndex() == 1)
+        default_is_youtube_mode = (self.input_type_combo.currentIndex() == 2)
+
         self._set_form_row_visible(self.file_panel_label, self.file_panel, default_is_file_mode)
-        self._set_form_row_visible(self.camera_panel_label, self.camera_panel, not default_is_file_mode)
-        self._set_form_row_visible(self.second_camera_panel_label, self.second_camera_panel, not default_is_file_mode)
+        self._set_form_row_visible(self.youtube_panel_label, self.youtube_panel, default_is_youtube_mode)
+        self._set_form_row_visible(self.camera_panel_label, self.camera_panel, default_is_camera_mode)
+        self._set_form_row_visible(self.second_camera_panel_label, self.second_camera_panel, default_is_camera_mode)
 
 
     def _set_form_row_visible(self, label_widget, field_widget, visible):
@@ -140,22 +157,29 @@ class InputConfigWidget(QWidget):
     def _on_input_type_changed(self, index):
         is_file_mode = (index == 0)
         is_camera_mode = (index == 1)
+        is_youtube_mode = (index == 2) # New condition
 
         self._set_form_row_visible(self.file_panel_label, self.file_panel, is_file_mode)
+        self._set_form_row_visible(self.youtube_panel_label, self.youtube_panel, is_youtube_mode) # Show/hide YouTube panel
         self._set_form_row_visible(self.camera_panel_label, self.camera_panel, is_camera_mode)
         self._set_form_row_visible(self.second_camera_panel_label, self.second_camera_panel, is_camera_mode)
 
+        self.detener_previsualizacion()
+        self.detener_segunda_previsualizacion()
+        self.frame_received.emit(None)
+        self.second_frame_received.emit(None)
+
         if is_file_mode:
-            self.detener_previsualizacion()
-            self.detener_segunda_previsualizacion()
             self.main_camera_info_str = "N/A"
             self.second_camera_info_str = "N/A"
+            self.youtube_url_info_str = "N/A"
             if self.video_path_edit.text():
                 self.update_video_info(self.video_path_edit.text())
             else:
                 self.video_file_info_str = "No hay video seleccionado"
-        else:
+        elif is_camera_mode:
             self.video_file_info_str = "N/A"
+            self.youtube_url_info_str = "N/A"
             if not self.available_cameras:
                 self.refresh_cameras()
 
@@ -163,20 +187,35 @@ class InputConfigWidget(QWidget):
                  self._on_camera_selection_changed(self.camera_combo.currentIndex())
             else:
                  self.main_camera_info_str = "Ninguna cámara fija disponible"
-                 self.frame_received.emit(None)
 
             if self.second_camera_combo.count() > 0 :
                  self._on_second_camera_selection_changed(self.second_camera_combo.currentIndex())
             else:
                  self.second_camera_info_str = "Ninguna cámara móvil disponible"
-                 self.second_frame_received.emit(None)
+        elif is_youtube_mode: # New logic for YouTube
+            self.main_camera_info_str = "N/A"
+            self.second_camera_info_str = "N/A"
+            self.video_file_info_str = "N/A"
+            if self.youtube_url_edit.text():
+                self.youtube_url_info_str = f"URL: {self.youtube_url_edit.text()}"
+            else:
+                self.youtube_url_info_str = "Ingrese una URL de YouTube"
+
 
         self._update_combined_video_info_label()
         self.input_type_changed.emit(index)
 
+    def _on_youtube_url_changed(self, url_text): # New method
+        if self.input_type_combo.currentIndex() == 2: # YouTube mode
+            if url_text:
+                self.youtube_url_info_str = f"URL: {url_text}"
+                self.youtube_url_changed.emit(url_text) # Emit signal for MainWindow
+            else:
+                self.youtube_url_info_str = "Ingrese una URL de YouTube"
+            self._update_combined_video_info_label()
+
 
     def _browse_video_file(self):
-        # Suggest directory from user's documents/videos directory or last used
         documents_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
         videos_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
         start_dir = videos_path or documents_path or ""
@@ -228,10 +267,11 @@ class InputConfigWidget(QWidget):
 
 
     def _update_combined_video_info_label(self):
-        if self.input_type_combo.currentIndex() == 0:
+        current_index = self.input_type_combo.currentIndex()
+        if current_index == 0: # File
             self.video_info_label.setText(self.video_file_info_str)
             self.info_label_qlabel.setText("Info Archivo:")
-        else:
+        elif current_index == 1: # Camera
             self.info_label_qlabel.setText("Info Cámaras:")
             parts = []
             if self.main_camera_info_str and self.main_camera_info_str != "N/A":
@@ -243,6 +283,9 @@ class InputConfigWidget(QWidget):
                 self.video_info_label.setText("Seleccione cámaras o actualice la lista.")
             else:
                 self.video_info_label.setText(" | ".join(parts))
+        elif current_index == 2: # YouTube
+            self.video_info_label.setText(self.youtube_url_info_str)
+            self.info_label_qlabel.setText("Info YouTube:")
 
 
     def _on_camera_selection_changed(self, index):
@@ -251,7 +294,7 @@ class InputConfigWidget(QWidget):
             self.main_camera_info_str = "Ninguna cámara fija seleccionada."
             self._update_combined_video_info_label()
             self.frame_received.emit(None)
-            self.camera_selected.emit(-1, "Ninguna") # Emit no camera
+            self.camera_selected.emit(-1, "Ninguna")
             return
 
         camera_data = self.camera_combo.itemData(index)
@@ -263,7 +306,6 @@ class InputConfigWidget(QWidget):
             return
 
         camera_id = camera_data
-
         second_cam_data = self.second_camera_combo.currentData()
         if second_cam_data is not None and second_cam_data == camera_id and self.second_camera_combo.currentIndex() > 0 :
             msg = "Conflicto: La cámara fija no puede ser la misma que la móvil si ambas están activas."
@@ -298,7 +340,6 @@ class InputConfigWidget(QWidget):
              return
 
         camera_id = camera_data
-
         if camera_id == -1:
             self.detener_segunda_previsualizacion()
             self.second_camera_info_str = "N/A"
@@ -325,7 +366,7 @@ class InputConfigWidget(QWidget):
 
     def iniciar_previsualizacion_camara(self, camera_id_tuple):
         self.detener_previsualizacion()
-        self.camera_thread = CameraThread(camera_id_tuple, self) # Pass self as parent
+        self.camera_thread = CameraThread(camera_id_tuple, self)
         self.camera_thread.frame_received.connect(self._on_frame_received)
         self.camera_thread.camera_info_signal.connect(self._update_main_camera_info_from_thread)
         self.camera_thread.camera_error_signal.connect(self._handle_main_camera_error_from_thread)
@@ -337,7 +378,7 @@ class InputConfigWidget(QWidget):
 
     def iniciar_segunda_previsualizacion_camara(self, camera_id_tuple):
         self.detener_segunda_previsualizacion()
-        self.second_camera_thread = CameraThread(camera_id_tuple, self) # Pass self as parent
+        self.second_camera_thread = CameraThread(camera_id_tuple, self)
         self.second_camera_thread.frame_received.connect(self._on_second_frame_received)
         self.second_camera_thread.camera_info_signal.connect(self._update_second_camera_info_from_thread)
         self.second_camera_thread.camera_error_signal.connect(self._handle_second_camera_error_from_thread)
@@ -465,8 +506,6 @@ class InputConfigWidget(QWidget):
         self.available_cameras = self.detect_available_cameras(max_cameras=5)
 
         if not self.available_cameras:
-            # Add a default placeholder if no cameras are truly detected
-            # self.camera_combo.addItem("Cámara 0 (No Detectada)", 0)
             self.status_message.emit("No se detectaron cámaras. Verifique las conexiones.", 3000)
             self.main_camera_info_str = "No se detectaron cámaras"
             self.second_camera_info_str = "N/A"
@@ -478,15 +517,15 @@ class InputConfigWidget(QWidget):
 
         self._update_combined_video_info_label()
 
-        if self.input_type_combo.currentIndex() == 1:
+        if self.input_type_combo.currentIndex() == 1: # Camera mode
             if self.camera_combo.count() > 0:
                 self.camera_combo.setCurrentIndex(0)
-            else: # No cameras in main combo after refresh (even placeholder)
-                self._on_camera_selection_changed(-1) # Explicitly signal no camera
+            else:
+                self._on_camera_selection_changed(-1)
 
             if self.second_camera_combo.count() > 0:
-                self.second_camera_combo.setCurrentIndex(0) # Default to "Ninguna"
-            else: # Should not happen as "Ninguna" is always added
+                self.second_camera_combo.setCurrentIndex(0)
+            else:
                 self._on_second_camera_selection_changed(-1)
 
 
@@ -502,7 +541,7 @@ class InputConfigWidget(QWidget):
         camera_id = self.camera_combo.currentData()
         camera_desc = self.camera_combo.currentText()
 
-        if camera_id is None: # Should check for -1 if that's how you represent "no selection" in data
+        if camera_id is None:
             self.main_camera_info_str = "Ninguna cámara fija seleccionada para probar."
             self._update_combined_video_info_label()
             return
@@ -517,7 +556,7 @@ class InputConfigWidget(QWidget):
             return
 
         current_idx = self.second_camera_combo.currentIndex()
-        if current_idx <= 0:
+        if current_idx <= 0: # Index 0 is "Ninguna"
             self.status_message.emit("Seleccione una cámara móvil (no 'Ninguna') para probar.", 3000)
             self.second_camera_info_str = "N/A"
             self._update_combined_video_info_label()
@@ -544,55 +583,77 @@ class InputConfigWidget(QWidget):
         if path:
             self.video_path_edit.setText(path)
             self.update_video_info(path)
-            if self.input_type_combo.currentIndex() == 0:
+            if self.input_type_combo.currentIndex() == 0: # File mode
                 self._update_combined_video_info_label()
 
+    def get_youtube_url(self): # New method
+        return self.youtube_url_edit.text()
+
+    def set_youtube_url(self, url): # New method
+        if url:
+            self.youtube_url_edit.setText(url)
+            if self.input_type_combo.currentIndex() == 2: # YouTube mode
+                self.youtube_url_info_str = f"URL: {url}"
+                self._update_combined_video_info_label()
+
+
     def get_selected_camera_id(self):
-        if self.input_type_combo.currentIndex() == 1 and self.camera_combo.count() > 0:
+        if self.input_type_combo.currentIndex() == 1 and self.camera_combo.count() > 0: # Camera mode
             return self.camera_combo.currentData()
-        return None # Explicitly None if not applicable
+        return None
 
     def get_selected_second_camera_id(self):
-        if self.input_type_combo.currentIndex() == 1 and self.second_camera_combo.count() > 0:
+        if self.input_type_combo.currentIndex() == 1 and self.second_camera_combo.count() > 0: # Camera mode
             cam_id = self.second_camera_combo.currentData()
-            return cam_id if cam_id != -1 else None # Return None if "Ninguna" (-1)
+            return cam_id if cam_id != -1 else None
         return None
 
     def get_selected_camera_description(self):
-        if self.input_type_combo.currentIndex() == 1 and self.camera_combo.count() > 0:
+        if self.input_type_combo.currentIndex() == 1 and self.camera_combo.count() > 0: # Camera mode
             return self.camera_combo.currentText()
         return "N/A"
 
     def get_selected_second_camera_description(self):
-        if self.input_type_combo.currentIndex() == 1 and self.second_camera_combo.count() > 0:
+        if self.input_type_combo.currentIndex() == 1 and self.second_camera_combo.count() > 0: # Camera mode
             if self.second_camera_combo.currentData() != -1:
                 return self.second_camera_combo.currentText()
         return "Ninguna"
 
     def get_all_settings(self):
-        return {
-            "input_type": self.get_input_type(),
-            "video_path": self.get_video_path() if self.get_input_type() == 0 else None,
-            "camera_id": self.get_selected_camera_id() if self.get_input_type() == 1 else None,
-            "second_camera_id": self.get_selected_second_camera_id() if self.get_input_type() == 1 else None,
-        }
+        input_type = self.get_input_type()
+        settings = {"input_type": input_type}
+        if input_type == 0: # File
+            settings["video_path"] = self.get_video_path()
+        elif input_type == 1: # Camera
+            settings["camera_id"] = self.get_selected_camera_id()
+            settings["second_camera_id"] = self.get_selected_second_camera_id()
+        elif input_type == 2: # YouTube
+            settings["youtube_url"] = self.get_youtube_url()
+        return settings
+
 
     def set_all_settings(self, settings_dict):
         input_type = settings_dict.get("input_type", 0)
 
-        # Temporarily disconnect signals to prevent multiple triggers during setup
-        self.input_type_combo.currentIndexChanged.disconnect(self._on_input_type_changed)
-        self.camera_combo.currentIndexChanged.disconnect(self._on_camera_selection_changed)
-        self.second_camera_combo.currentIndexChanged.disconnect(self._on_second_camera_selection_changed)
+        # Temporarily disconnect signals to avoid multiple triggers and recursive calls
+        try: self.input_type_combo.currentIndexChanged.disconnect(self._on_input_type_changed)
+        except TypeError: pass
+        try: self.camera_combo.currentIndexChanged.disconnect(self._on_camera_selection_changed)
+        except TypeError: pass
+        try: self.second_camera_combo.currentIndexChanged.disconnect(self._on_second_camera_selection_changed)
+        except TypeError: pass
+        try: self.youtube_url_edit.textChanged.disconnect(self._on_youtube_url_changed)
+        except TypeError: pass
+
 
         self.input_type_combo.setCurrentIndex(input_type)
 
-        if input_type == 0:
+        if input_type == 0: # File
             video_path = settings_dict.get("video_path")
             if video_path:
-                self.video_path_edit.setText(video_path) # Use setText, not set_video_path to avoid duplicate info update yet
+                self.video_path_edit.setText(video_path) # Use setText directly
                 self.update_video_info(video_path) # This sets self.video_file_info_str
-        else:
+        elif input_type == 1: # Camera
             cam_id_to_set = settings_dict.get("camera_id")
             found_cam = False
             if cam_id_to_set is not None:
@@ -601,28 +662,38 @@ class InputConfigWidget(QWidget):
                         self.camera_combo.setCurrentIndex(i)
                         found_cam = True
                         break
-                if not found_cam and self.camera_combo.count() > 0: # Cam ID not found, select first available
-                    self.camera_combo.setCurrentIndex(0)
-            elif self.camera_combo.count() > 0: # No cam_id specified, select first
+                if not found_cam and self.camera_combo.count() > 0:
+                    self.camera_combo.setCurrentIndex(0) # Default to first if saved ID not found
+            elif self.camera_combo.count() > 0: # No cam_id specified in settings, select first
                  self.camera_combo.setCurrentIndex(0)
 
-
-            second_cam_id_to_set = settings_dict.get("second_camera_id", -1)
+            second_cam_id_to_set = settings_dict.get("second_camera_id", -1) # Default to -1 (Ninguna)
             found_second_cam = False
             for i in range(self.second_camera_combo.count()):
                 if self.second_camera_combo.itemData(i) == second_cam_id_to_set:
                     self.second_camera_combo.setCurrentIndex(i)
                     found_second_cam = True
                     break
-            if not found_second_cam and self.second_camera_combo.count() > 0: # If not found, default to "Ninguna"
-                self.second_camera_combo.setCurrentIndex(0) # Index 0 is "Ninguna"
+            if not found_second_cam: # If specific ID not found, try to set to "Ninguna"
+                ninguna_idx = self.second_camera_combo.findData(-1)
+                if ninguna_idx != -1:
+                    self.second_camera_combo.setCurrentIndex(ninguna_idx)
+                elif self.second_camera_combo.count() > 0: # Fallback to first item if "Ninguna" isn't there (should be)
+                    self.second_camera_combo.setCurrentIndex(0)
+
+        elif input_type == 2: # YouTube
+            youtube_url = settings_dict.get("youtube_url")
+            if youtube_url:
+                self.youtube_url_edit.setText(youtube_url) # Use setText directly
+                self.youtube_url_info_str = f"URL: {youtube_url}"
 
         # Reconnect signals
         self.input_type_combo.currentIndexChanged.connect(self._on_input_type_changed)
         self.camera_combo.currentIndexChanged.connect(self._on_camera_selection_changed)
         self.second_camera_combo.currentIndexChanged.connect(self._on_second_camera_selection_changed)
+        self.youtube_url_edit.textChanged.connect(self._on_youtube_url_changed)
 
-        # Manually trigger the update logic for the current state
+        # Manually trigger the update logic for the current state after all settings are applied
         self._on_input_type_changed(self.input_type_combo.currentIndex())
 
 
