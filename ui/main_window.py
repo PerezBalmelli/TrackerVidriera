@@ -242,6 +242,12 @@ class MainWindow(QMainWindow):
         self.codec_combo = QComboBox()
         self.codec_combo.addItems(["XVID", "MP4V", "MJPG", "H264", "AVC1"])
         output_layout.addRow("Formato:", self.codec_combo)
+        self.save_main_camera_checkbox = QCheckBox("Guardar cámara principal")
+        self.save_main_camera_checkbox.setChecked(True)
+        self.save_mobile_camera_checkbox = QCheckBox("Guardar cámara móvil")
+        self.save_mobile_camera_checkbox.setChecked(False)
+        output_layout.addRow(self.save_main_camera_checkbox)
+        output_layout.addRow(self.save_mobile_camera_checkbox)    
         output_group.setLayout(output_layout)
         parent_layout.addWidget(output_group)
     
@@ -495,9 +501,28 @@ class MainWindow(QMainWindow):
         index = self.baudrate_combo.findText(str(settings.serial_baudrate))
         if index >= 0:
             self.baudrate_combo.setCurrentIndex(index)
-    
+
+    def reproducir_video_salida(self, path):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            self.status_bar.showMessage(f"No se pudo abrir el video procesado: {path}", 5000)
+            return
+        time.sleep(2) # espera para que termina de escribir el archivo de salida
+        self.status_bar.showMessage("Mostrando video procesado...", 3000)
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            self.mostrar_frame_en_label(frame)
+            QApplication.processEvents()
+            time.sleep(1 / max(1, cap.get(cv2.CAP_PROP_FPS)))  # Evita división por cero
+
+        cap.release()
+        self.status_bar.showMessage("Visualización finalizada.", 3000)
+
     def process_video(self):
-        try: # Add try-except for rastreo import
+        try:  # Add try-except for rastreo import
             from rastreo import (
                 inicializar_modelo, detectar_personas,
                 extraer_ids, actualizar_rastreo, dibujar_anotaciones
@@ -507,7 +532,8 @@ class MainWindow(QMainWindow):
             return
 
         params = self._get_processing_parameters()
-        if not params: return
+        if not params:
+            return
 
         self.procesando = True
         self.stop_button.setEnabled(True)
@@ -516,24 +542,37 @@ class MainWindow(QMainWindow):
 
         try:
             model = inicializar_modelo(str(params['model_path']))
-            cap, out, total_frames = self._setup_video_io(params)
-            if not cap or (not out and not params['is_camera']): # 'out' might be None if only previewing camera
-                 self.detener_procesamiento(); return
+            cap, main_out, mobile_out, total_frames = self._setup_video_io(params)
+            if not cap or (not main_out and not params['is_camera']):  # 'out' might be None if only previewing camera
+                self.detener_procesamiento()
+                return
 
-            self._process_video_with_tracking(model, cap, out, params,
-                detectar_personas, extraer_ids, actualizar_rastreo, dibujar_anotaciones, total_frames)
+            self._process_video_with_tracking(
+                model, cap, main_out, mobile_out, params,
+                detectar_personas, extraer_ids,
+                actualizar_rastreo, dibujar_anotaciones,
+                total_frames
+            )
 
-            if cap: cap.release()
-            if out: out.release()
+            if cap:
+                cap.release()
+            if main_out:
+                main_out.release()
 
-            if self.procesando: # If not stopped by user
-                output_msg = f"Procesado. Guardado en: {params['output_path']}" if not params['is_camera'] else "Procesamiento en vivo finalizado."
-                self.status_bar.showMessage(output_msg, 5000)
+            if self.procesando:  # If not stopped by user
+                if not params['is_camera']:
+                    self.status_bar.showMessage(f"Procesado. Mostrando: {params['output_path']}", 3000)
+                    self.reproducir_video_salida(params['output_path'])
+                else:
+                    self.status_bar.showMessage("Procesamiento en vivo finalizado.", 5000)
+
         except Exception as e:
             self.status_bar.showMessage(f"Error en procesamiento: {str(e)}", 5000)
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
+
         finally:
-            self.detener_procesamiento() # Ensure state is reset
+            self.detener_procesamiento()  # Ensure state is reset
 
     def detener_procesamiento(self):
         self.procesando = False
@@ -583,111 +622,168 @@ class MainWindow(QMainWindow):
         return {
             'video_path': video_path, 'is_camera': is_camera, 'model_path': model_path,
             'confidence': confidence, 'frames_espera': frames_espera,
-            'output_path': output_path, 'codec': codec, 'video_path_display': video_path_display
+            'output_path': output_path, 'codec': codec, 'video_path_display': video_path_display,
+            'save_main': self.save_main_camera_checkbox.isChecked(),
+            'save_mobile': self.save_mobile_camera_checkbox.isChecked()
         }
+
+    # def _setup_video_io(self, params):
+    #     cap = None
+    #     out = None
+    #     total_frames = 0
+    #     try:
+    #         if params['is_camera']:
+    #             # For live camera processing, VideoCapture is handled by CameraThread if just previewing,
+    #             # or here if processing directly. For this merged version, _process_video_with_tracking will get frames.
+    #             # If processing live to a file, we need a new VideoCapture instance.
+    #             cap = cv2.VideoCapture(params['video_path'])
+    #             if not cap.isOpened():
+    #                 self.status_bar.showMessage(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
+    #                 return None, None, 0
+    #             total_frames = -1 # Live camera
+    #         else: # File
+    #             cap = cv2.VideoCapture(params['video_path'])
+    #             if not cap.isOpened():
+    #                 self.status_bar.showMessage(f"Error: No se pudo abrir video {params['video_path']}", 3000)
+    #                 return None, None, 0
+    #             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    #         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    #         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    #         fps = cap.get(cv2.CAP_PROP_FPS)
+    #         if fps <= 0: fps = 30.0
+
+    #         # Setup output writer only if not just previewing camera
+    #         # If it's a camera and we want to save the processed output:
+    #         if not params['is_camera'] or (params['is_camera'] and params['output_path']):
+    #             output_path = self._ensure_valid_extension(params['output_path'], params['codec'])
+    #             params['output_path'] = output_path # Update params
+    #             fourcc = cv2.VideoWriter_fourcc(*params['codec'])
+    #             output_dir = os.path.dirname(output_path)
+    #             if output_dir and not os.path.exists(output_dir): os.makedirs(output_dir)
+
+    #             out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    #             if not out.isOpened():
+    #                 self.status_bar.showMessage("Error al crear archivo de salida. Intentando H264 para MP4...", 3000)
+    #                 if params['codec'] == "MP4V" and os.path.splitext(output_path)[1].lower() == ".mp4":
+    #                     fourcc = cv2.VideoWriter_fourcc(*"H264")
+    #                     out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    #                     if not out.isOpened():
+    #                          self.status_bar.showMessage("Error al crear archivo de salida incluso con H264.", 3000)
+    #                          if cap: cap.release()
+    #                          return None, None, 0
+    #         return cap, out, total_frames
+    #     except Exception as e:
+    #         self.status_bar.showMessage(f"Error en setup I/O: {str(e)}", 3000)
+    #         if cap: cap.release()
+    #         if out: out.release()
+    #         return None, None, 0
 
     def _setup_video_io(self, params):
         cap = None
-        out = None
+        main_out = None
+        mobile_out = None
         total_frames = 0
         try:
-            if params['is_camera']:
-                # For live camera processing, VideoCapture is handled by CameraThread if just previewing,
-                # or here if processing directly. For this merged version, _process_video_with_tracking will get frames.
-                # If processing live to a file, we need a new VideoCapture instance.
-                cap = cv2.VideoCapture(params['video_path'])
-                if not cap.isOpened():
-                    self.status_bar.showMessage(f"Error: No se pudo abrir la cámara ID {params['video_path']}", 3000)
-                    return None, None, 0
-                total_frames = -1 # Live camera
-            else: # File
-                cap = cv2.VideoCapture(params['video_path'])
-                if not cap.isOpened():
-                    self.status_bar.showMessage(f"Error: No se pudo abrir video {params['video_path']}", 3000)
-                    return None, None, 0
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap = cv2.VideoCapture(params['video_path'])
+            if not cap.isOpened():
+                self.status_bar.showMessage(f"Error al abrir video o cámara: {params['video_path']}", 3000)
+                return None, None, None, 0
 
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if not params['is_camera'] else -1
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = cap.get(cv2.CAP_PROP_FPS)
             if fps <= 0: fps = 30.0
 
-            # Setup output writer only if not just previewing camera
-            # If it's a camera and we want to save the processed output:
-            if not params['is_camera'] or (params['is_camera'] and params['output_path']):
-                output_path = self._ensure_valid_extension(params['output_path'], params['codec'])
-                params['output_path'] = output_path # Update params
-                fourcc = cv2.VideoWriter_fourcc(*params['codec'])
-                output_dir = os.path.dirname(output_path)
-                if output_dir and not os.path.exists(output_dir): os.makedirs(output_dir)
+            fourcc = cv2.VideoWriter_fourcc(*params['codec'])
+            base_path = os.path.splitext(params['output_path'])[0]
+            ext = os.path.splitext(params['output_path'])[1]
 
-                out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-                if not out.isOpened():
-                    self.status_bar.showMessage("Error al crear archivo de salida. Intentando H264 para MP4...", 3000)
-                    if params['codec'] == "MP4V" and os.path.splitext(output_path)[1].lower() == ".mp4":
-                        fourcc = cv2.VideoWriter_fourcc(*"H264")
-                        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-                        if not out.isOpened():
-                             self.status_bar.showMessage("Error al crear archivo de salida incluso con H264.", 3000)
-                             if cap: cap.release()
-                             return None, None, 0
-            return cap, out, total_frames
+            if params['save_main']:
+                main_out = cv2.VideoWriter(base_path + "_main" + ext, fourcc, fps, (frame_width, frame_height))
+            if params['save_mobile']:
+                mobile_out = cv2.VideoWriter(base_path + "_mobile" + ext, fourcc, fps, (frame_width, frame_height))
+
+            return cap, main_out, mobile_out, total_frames
         except Exception as e:
             self.status_bar.showMessage(f"Error en setup I/O: {str(e)}", 3000)
             if cap: cap.release()
-            if out: out.release()
-            return None, None, 0
+            if main_out: main_out.release()
+            if mobile_out: mobile_out.release()
+            return None, None, None, 0
 
-    def _process_video_with_tracking(self, model, cap, out, params,
+    def _process_video_with_tracking(self, model, cap, main_out, mobile_out, params,
                                      detectar_personas, extraer_ids,
                                      actualizar_rastreo, dibujar_anotaciones, total_frames):
         primer_id, rastreo_id, ultima_coords, frames_perdidos = None, None, None, 0
         ids_globales = set()
         frame_count = 0
-        controlar_servo = params['is_camera'] # Example: servo control only for live camera
+        controlar_servo = params['is_camera']  # Ejemplo: controlar servo solo para cámara en vivo
 
         while self.procesando:
             ret, frame = cap.read()
-            if not ret: break
+            if not ret:
+                break
 
             frame_count += 1
             if not params['is_camera'] and total_frames > 0:
                 progress = int((frame_count / total_frames) * 100)
                 self.status_bar.showMessage(f"Procesando: {progress}%", 0)
-            elif params['is_camera'] and frame_count % 30 == 0 :
-                 self.status_bar.showMessage(f"Frames procesados (en vivo): {frame_count}",0)
-
+            elif params['is_camera'] and frame_count % 30 == 0:
+                self.status_bar.showMessage(f"Frames procesados (en vivo): {frame_count}", 0)
 
             frame_width = frame.shape[1]
             result = detectar_personas(model, frame, params['confidence'])
             if result is None:
-                if params['is_camera']: self.mostrar_frame_en_label(frame) # Show raw frame
-                if out: out.write(frame) # Write raw frame if detection fails
+                self.mostrar_frame_en_label(frame)  # Mostrar frame original si no se detecta nada
+                if main_out:
+                    main_out.write(frame)
                 QApplication.processEvents()
                 continue
 
             boxes = result.boxes
             ids_esta_frame = extraer_ids(boxes)
+
             primer_id, rastreo_id, reiniciar_coords, frames_perdidos = actualizar_rastreo(
                 primer_id, rastreo_id, ids_esta_frame, frames_perdidos, params['frames_espera']
             )
-            if reiniciar_coords: ultima_coords = None
+            if reiniciar_coords:
+                ultima_coords = None
 
-            # Use result.plot() for default annotations from YOLO, then add custom
-            # annotated_frame = result.plot() # This already draws boxes and labels
-            # Pass the plotted frame for further custom annotations
+            # Anotar frame procesado
             annotated_frame, ultima_coords = dibujar_anotaciones(
                 result.plot(), boxes, rastreo_id, ultima_coords, ids_globales,
                 frame_width, controlar_servo=controlar_servo
             )
 
-            if out: out.write(annotated_frame)
-            if params['is_camera'] or self.input_type_combo.currentIndex() == 1: # Show preview if it's camera or if processing from camera
+            # Guardar salida si se desea
+            if main_out:
+                main_out.write(annotated_frame)
+
+            if mobile_out and ultima_coords:
+                x1, y1, x2, y2 = map(int, ultima_coords)
+                # Validar límites del recorte
+                h, w = frame.shape[:2]
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(w, x2)
+                y2 = min(h, y2)
+                if x2 > x1 and y2 > y1:
+                    zoom_frame = frame[y1:y2, x1:x2]
+                    zoom_frame = cv2.resize(zoom_frame, (w, h))
+                    mobile_out.write(zoom_frame)
+
+            if params['is_camera'] or self.input_type_combo.currentIndex() == 1:
                 self.mostrar_frame_en_label(annotated_frame)
 
-            QApplication.processEvents() # Keep UI responsive
+            QApplication.processEvents()
 
-        # Final cleanup in process_video or detener_procesamiento
+        # Cierre seguro
+        if main_out:
+            main_out.release()
+        if mobile_out:
+            mobile_out.release()
 
     def toggle_input_type(self, index):
         # Use helper methods to manage visibility of QFormLayout rows
