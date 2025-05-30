@@ -284,14 +284,16 @@ class PersonaIdWidget(QWidget):
                 if is_tracking and not is_visible:
                     show_orange = True
                     button_text += " (🔍)"
-                  # Caso 2: Es el ID seleccionado manualmente y ya no está visible
+                    print(f"Marcando ID {id_value} como naranja (tracking pero no visible)")
+                
+                # Caso 2: Es el ID seleccionado manualmente y ya no está visible
                 if id_value == self._manual_id and not self._manual_id_visible:
                     show_orange = True
                     button_text += " (🔍)"
-                    print(f"Marcando ID {id_value} como naranja (manual y no visible) - is_visible={is_visible}")
+                    print(f"Marcando ID {id_value} como naranja (manual y no visible)")
                 
                 # Caso 3: Hubo un cambio automático y este es el nuevo ID
-                if self._auto_changed and id_value == currently_tracking_id:
+                if self._auto_changed and id_value == currently_tracking_id and id_value != self._manual_id:
                     show_orange = True
                     button_text += " (🔄)"  # Indicador de cambio automático
                     print(f"Marcando ID {id_value} como naranja (cambio automático)")

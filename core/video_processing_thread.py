@@ -271,14 +271,14 @@ class VideoProcessingThread(QThread):
                             )
                             if reiniciar_coords: ultima_coords = None
                             
-                            # Preparar lista de IDs para el widget
-                            # Incluir IDs detectados + el ID que estamos rastreando (si existe y no está en la lista)
+                            # Obtener el ID que se está rastreando actualmente usando el método auxiliar
+                            current_tracking_id = self.person_tracker.get_current_tracking_id()
+                            
+                            # Preparar lista de IDs para el widget (solo los visibles en este frame)
                             ids_para_widget = list(ids_esta_frame)
-                            if rastreo_id is not None and rastreo_id not in ids_para_widget:
-                                # Agregar el ID que estamos rastreando aunque no esté visible temporalmente
-                                ids_para_widget.append(rastreo_id)
-                              # Emitir IDs para el widget de selección, con el indicador reiniciar_coords que muestra si hubo cambio de ID
-                            self.person_ids_detected.emit(ids_para_widget, rastreo_id if rastreo_id else -1, reiniciar_coords)
+                            
+                            # Emitir IDs para el widget de selección, con el indicador reiniciar_coords que muestra si hubo cambio de ID
+                            self.person_ids_detected.emit(ids_para_widget, current_tracking_id if current_tracking_id else -1, reiniciar_coords)
                             
                             plot_frame = result.plot()
                             if plot_frame is not None and isinstance(plot_frame, np.ndarray):
@@ -291,9 +291,10 @@ class VideoProcessingThread(QThread):
                         else:                            # No hay detecciones en este frame
                             # Si estamos rastreando un ID, incluirlo en la lista para mantener la selección
                             ids_para_widget = []
-                            if rastreo_id is not None:
-                                ids_para_widget = [rastreo_id]
-                            self.person_ids_detected.emit(ids_para_widget, rastreo_id if rastreo_id else -1, False)
+                            # Obtener el ID que se está rastreando actualmente (aunque no sea visible)
+                            current_tracking_id = self.person_tracker.get_current_tracking_id()
+                            # Emitir una lista vacía de IDs visibles, pero incluir el ID de rastreo actual
+                            self.person_ids_detected.emit(ids_para_widget, current_tracking_id if current_tracking_id else -1, False)
                     else:
                         logger.warning("Person tracker no está disponible. Saltando detección/tracking.")
                 except Exception as e_track:
