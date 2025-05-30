@@ -31,7 +31,7 @@ class VideoProcessingThread(QThread):
     progress_update = pyqtSignal(int, int, str)
     processing_finished = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
-
+    person_ids_detected = pyqtSignal(list, int, bool)  # Lista de IDs detectados, ID rastreado, y bool indicando cambio auto
     def __init__(self, processing_params, person_tracker_ref, serial_widget_ref, parent=None):
         super().__init__(parent)
         self.params = processing_params
@@ -42,6 +42,17 @@ class VideoProcessingThread(QThread):
         self.cap_second = None
         self.out_main = None
         self.out_mobile = None
+
+    def set_target_person_id(self, target_id: int):
+        """
+        Establece el ID de la persona a rastrear.
+        
+        Args:
+            target_id (int): ID de la persona a seguir
+        """
+        if self.person_tracker and hasattr(self.person_tracker, 'set_target_person_id'):
+            self.person_tracker.set_target_person_id(target_id)
+            logger.info(f"ID objetivo establecido desde thread: {target_id}")
 
     def _get_youtube_stream_url_with_ytdlp(self, youtube_url):
         # Opciones para yt-dlp:
@@ -252,10 +263,23 @@ class VideoProcessingThread(QThread):
                         if result and hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0:
                             boxes = result.boxes
                             ids_esta_frame = self.person_tracker.extraer_ids(boxes)
+                            
+                            # Actualizar ids_globales con los IDs detectados en este frame
+                            ids_globales.update(ids_esta_frame)
                             primer_id, rastreo_id, reiniciar_coords, frames_perdidos = self.person_tracker.actualizar_rastreo(
                                 primer_id, rastreo_id, ids_esta_frame, frames_perdidos, self.params['frames_espera']
                             )
                             if reiniciar_coords: ultima_coords = None
+                            
+                            # Preparar lista de IDs para el widget
+                            # Incluir IDs detectados + el ID que estamos rastreando (si existe y no está en la lista)
+                            ids_para_widget = list(ids_esta_frame)
+                            if rastreo_id is not None and rastreo_id not in ids_para_widget:
+                                # Agregar el ID que estamos rastreando aunque no esté visible temporalmente
+                                ids_para_widget.append(rastreo_id)
+                              # Emitir IDs para el widget de selección, con el indicador reiniciar_coords que muestra si hubo cambio de ID
+                            self.person_ids_detected.emit(ids_para_widget, rastreo_id if rastreo_id else -1, reiniciar_coords)
+                            
                             plot_frame = result.plot()
                             if plot_frame is not None and isinstance(plot_frame, np.ndarray):
                                 annotated_frame_main = plot_frame
@@ -263,6 +287,13 @@ class VideoProcessingThread(QThread):
                                 annotated_frame_main, boxes, rastreo_id, ultima_coords, ids_globales,
                                 frame_main.shape[1], controlar_servo=controlar_servo
                             )
+                        
+                        else:                            # No hay detecciones en este frame
+                            # Si estamos rastreando un ID, incluirlo en la lista para mantener la selección
+                            ids_para_widget = []
+                            if rastreo_id is not None:
+                                ids_para_widget = [rastreo_id]
+                            self.person_ids_detected.emit(ids_para_widget, rastreo_id if rastreo_id else -1, False)
                     else:
                         logger.warning("Person tracker no está disponible. Saltando detección/tracking.")
                 except Exception as e_track:
