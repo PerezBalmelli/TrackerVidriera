@@ -8,7 +8,6 @@ class ObjectTracker:
     Clase responsable del rastreo de objetos/personas a través de múltiples frames.
     Mantiene el estado de los IDs rastreados y gestiona el cambio de objetivo.
     """
-    
     def __init__(self, frames_espera=10):
         self.frames_espera = frames_espera
         self.primer_id = None
@@ -16,7 +15,7 @@ class ObjectTracker:
         self.frames_perdidos = 0
         self.ultima_coords = None
         self.ids_globales = set()  # Todos los IDs vistos
-        
+        self.manual_selection = False  # Bandera para ID seleccionado manualmente
     def actualizar(self, ids_esta_frame):
         """Actualiza el estado de rastreo basado en los IDs detectados en el frame actual."""
         # Añadir todos los IDs detectados a los globales
@@ -27,6 +26,7 @@ class ObjectTracker:
             self.primer_id = self.rastreo_id = next(iter(ids_esta_frame))
             print(f"Primera persona detectada: ID {self.primer_id}")
             self.frames_perdidos = 0
+            self.manual_selection = False  # Automático
             return self.primer_id, self.rastreo_id, False, self.frames_perdidos
         
         # Si ya hay un ID de rastreo
@@ -34,18 +34,33 @@ class ObjectTracker:
             # Verificar si el ID ya no está presente
             if self.rastreo_id not in ids_esta_frame:
                 self.frames_perdidos += 1
-                # Si se superó el umbral de frames perdidos
-                if self.frames_perdidos >= self.frames_espera:
-                    print(f"ID {self.rastreo_id} ausente durante {self.frames_perdidos} frames. "
-                          f"Buscando nuevo objetivo...")
-                    # Si hay otros objetivos, cambiar al primero disponible
-                    if ids_esta_frame:
-                        nuevo_id = next(iter(ids_esta_frame))
-                        print(f"Ahora rastreando a la nueva persona: ID {nuevo_id}")
-                        self.rastreo_id = nuevo_id
-                        self.frames_perdidos = 0
-                        # Indicar que se cambió el objetivo (reiniciar coordenadas)
-                        return self.primer_id, self.rastreo_id, True, self.frames_perdidos
+                # Si fue selección manual, ser más tolerante (no cambiar automáticamente)
+                if self.manual_selection:
+                    print(f"ID seleccionado manualmente {self.rastreo_id} no visible en frame {self.frames_perdidos} frames...")
+                    if self.frames_perdidos >= self.frames_espera :
+                        print(f"ID {self.rastreo_id} ausente durante {self.frames_perdidos} frames. "
+                              f"Selección manual perdida, buscando nuevo objetivo...")
+                        if ids_esta_frame:
+                            nuevo_id = next(iter(ids_esta_frame))                            
+                            print(f"Ahora rastreando a la nueva persona: ID {nuevo_id}")
+                            self.rastreo_id = nuevo_id
+                            self.frames_perdidos = 0
+                            self.manual_selection = False  # Ya no es manual
+                            print(f"DEBUG: Cambio de selección manual a automática. manual_selection ahora es {self.manual_selection}")
+                            return self.primer_id, self.rastreo_id, True, self.frames_perdidos
+                else:
+                    # Si se superó el umbral de frames perdidos (selección automática)
+                    if self.frames_perdidos >= self.frames_espera:
+                        print(f"ID {self.rastreo_id} ausente durante {self.frames_perdidos} frames. "
+                              f"Buscando nuevo objetivo...")
+                        # Si hay otros objetivos, cambiar al primero disponible
+                        if ids_esta_frame:
+                            nuevo_id = next(iter(ids_esta_frame))
+                            print(f"Ahora rastreando a la nueva persona: ID {nuevo_id}")
+                            self.rastreo_id = nuevo_id
+                            self.frames_perdidos = 0
+                            # Indicar que se cambió el objetivo (reiniciar coordenadas)
+                            return self.primer_id, self.rastreo_id, True, self.frames_perdidos
             else:
                 # El ID sigue presente, reiniciar contador
                 self.frames_perdidos = 0
@@ -54,13 +69,13 @@ class ObjectTracker:
     
     def set_frames_espera(self, frames):
         self.frames_espera = max(1, frames)  # Mínimo 1 frame
-    
     def reset(self):
         self.primer_id = None
         self.rastreo_id = None
         self.frames_perdidos = 0
         self.ultima_coords = None
         self.ids_globales.clear()
+        self.manual_selection = False
         
     def get_tracked_id(self):
         return self.rastreo_id
