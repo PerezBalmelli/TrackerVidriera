@@ -199,6 +199,7 @@ class VideoProcessingThread(QThread):
             self._release_resources()
             return -2
 
+    
     def run(self):
         self.running = True
         logger.info("Thread de procesamiento de video iniciado.")
@@ -257,6 +258,7 @@ class VideoProcessingThread(QThread):
                     self.progress_update.emit(frame_count, total_frames, progress_text)
 
                 annotated_frame_main = frame_main.copy()
+                boxes = None
                 try:
                     if self.person_tracker and hasattr(self.person_tracker, 'detectar_personas'):
                         result = self.person_tracker.detectar_personas(frame_main, self.params['confidence'])
@@ -299,6 +301,25 @@ class VideoProcessingThread(QThread):
                         logger.warning("Person tracker no está disponible. Saltando detección/tracking.")
                 except Exception as e_track:
                     logger.error(f"Error durante detección/tracking: {e_track}", exc_info=True)
+
+                    # --- ZOOM VIRTUAL: activar en modos archivo o youtube
+                is_virtual_mobile = (not self.params['is_camera'])  # True en archivo o YouTube
+                if is_virtual_mobile:
+                    # Calcula el zoom virtual solo si hay boxes y un id a seguir
+                    zoom_frame = None
+                    if boxes is not None and rastreo_id is not None:
+                        zoom_frame = obtener_crop_zoom(frame_main, boxes, rastreo_id, zoom_factor=2.0)
+                    # Si no hay persona, opcional: mostrar None o el frame completo
+                    second_frame_for_display = zoom_frame if zoom_frame is not None else None
+                    second_frame_for_saving = zoom_frame if zoom_frame is not None else None
+                else:
+                    # MANTENER LOGICA PARA CAMARA FISICA (DOS CAMARAS)
+                    if self.cap_second and self.cap_second.isOpened():
+                        ret_second, temp_second_frame = self.cap_second.read()
+                        if ret_second:
+                            second_frame_for_display = temp_second_frame.copy()
+                            if self.out_mobile and self.params.get('save_mobile'):
+                                second_frame_for_saving = temp_second_frame
 
                 self.processed_frame.emit(annotated_frame_main, second_frame_for_display)
 
@@ -357,3 +378,30 @@ class VideoProcessingThread(QThread):
     def stop(self):
         logger.info("Solicitando detención del thread de procesamiento de video...")
         self.running = False
+
+def obtener_crop_zoom(frame, boxes, rastreo_id, zoom_factor=2.0):
+    """
+    Recorta y amplía la zona donde se encuentra la persona rastreada (rastreo_id).
+    Retorna el frame zoomed (al tamaño original) o None si ID no se detecta.
+    """
+    if boxes is not None and boxes.id is not None and boxes.xyxy is not None:
+        for i, id_tensor in enumerate(boxes.id):
+            id_ = int(id_tensor.item())
+            if id_ == rastreo_id and i < len(boxes.xyxy):
+                x1, y1, x2, y2 = map(int, boxes.xyxy[i].tolist())
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                w = x2 - x1
+                h = y2 - y1
+                crop_w = int(w * zoom_factor)
+                crop_h = int(h * zoom_factor)
+                x_start = max(0, cx - crop_w // 2)
+                x_end = min(frame.shape[1], cx + crop_w // 2)
+                y_start = max(0, cy - crop_h // 2)
+                y_end = min(frame.shape[0], cy + crop_h // 2)
+                crop = frame[y_start:y_end, x_start:x_end]
+                crop_resized = cv2.resize(
+                    crop, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR
+                )
+                return crop_resized
+    return None        
