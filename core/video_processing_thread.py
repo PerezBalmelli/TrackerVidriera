@@ -164,21 +164,27 @@ class VideoProcessingThread(QThread):
                     logger.error(f"Error al crear archivo principal en {self.params['output_path']}")
                     self.out_main = None
 
-            if self.params.get('save_mobile') and self.params.get('mobile_output_path') and self.cap_second and self.cap_second.isOpened():
+            if self.params.get('save_mobile') and self.params.get('mobile_output_path'):
                 mobile_output_dir = Path(self.params['mobile_output_path']).parent
                 mobile_output_dir.mkdir(parents=True, exist_ok=True)
                 mobile_fourcc = cv2.VideoWriter_fourcc(*self.params['mobile_codec'])
-                mobile_width = int(self.cap_second.get(cv2.CAP_PROP_FRAME_WIDTH))
-                mobile_height = int(self.cap_second.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                mobile_fps_cam = self.cap_second.get(cv2.CAP_PROP_FPS)
-                mobile_fps = mobile_fps_cam if mobile_fps_cam > 0 else main_fps
+                if self.cap_second and self.cap_second.isOpened():
+                    mobile_width = int(self.cap_second.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    mobile_height = int(self.cap_second.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    mobile_fps_cam = self.cap_second.get(cv2.CAP_PROP_FPS)
+                    mobile_fps = mobile_fps_cam if mobile_fps_cam > 0 else main_fps
+                else:
+                    #Para modo archivo/youtube: usa las dimensiones de video principal (el crop virtual se reescala a esto)
+                    mobile_width = main_width
+                    mobile_height = main_height
+                    mobile_fps = main_fps
                 if mobile_width > 0 and mobile_height > 0:
                     self.out_mobile = cv2.VideoWriter(str(self.params['mobile_output_path']), mobile_fourcc, mobile_fps, (mobile_width, mobile_height))
                     if not self.out_mobile.isOpened():
                         logger.error(f"Error al crear archivo móvil en {self.params['mobile_output_path']}")
                         self.out_mobile = None
                 else:
-                    logger.warning("Cámara móvil no tiene dimensiones válidas para guardar.")
+                    logger.warning("No se tienen dimensiones válidas para guardar salida móvil.")
                     self.out_mobile = None
 
             total_frames = -1 # Default para streams o cámaras
