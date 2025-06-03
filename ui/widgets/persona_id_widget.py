@@ -446,9 +446,6 @@ class PersonaIdWidget(QWidget):
         """
         if self.isVisible():
             self.raise_()
-            self.setFocus(Qt.FocusReason.OtherFocusReason)  # Intentar ganar foco
-            self.update()  # Forzar repintado
-            self.repaint()  # Forzar repintado inmediato
     def _recalc_size(self):
         """Recalcula la altura cuando el layout ya está resuelto."""
         header_h = self.title_label.sizeHint().height()
