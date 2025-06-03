@@ -32,6 +32,7 @@ class VideoProcessingThread(QThread):
     processing_finished = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     person_ids_detected = pyqtSignal(list, int, bool)  # Lista de IDs detectados, ID rastreado, y bool indicando cambio auto
+    detection_boxes_updated = pyqtSignal(object, tuple)  # Boxes detectados y tamaño del frame
     def __init__(self, processing_params, person_tracker_ref, serial_widget_ref, parent=None):
         super().__init__(parent)
         self.params = processing_params
@@ -284,9 +285,12 @@ class VideoProcessingThread(QThread):
                             
                             # Preparar lista de IDs para el widget (solo los visibles en este frame)
                             ids_para_widget = list(ids_esta_frame)
-                            
-                            # Emitir IDs para el widget de selección, con el indicador reiniciar_coords que muestra si hubo cambio de ID
+                              # Emitir IDs para el widget de selección, con el indicador reiniciar_coords que muestra si hubo cambio de ID
                             self.person_ids_detected.emit(ids_para_widget, current_tracking_id if current_tracking_id else -1, reiniciar_coords)
+                            
+                            # Emitir información de los boxes para la selección por clic
+                            frame_size = (frame_main.shape[1], frame_main.shape[0])  # (ancho, alto)
+                            self.detection_boxes_updated.emit(boxes, frame_size)
                             
                             plot_frame = result.plot()
                             if plot_frame is not None and isinstance(plot_frame, np.ndarray):

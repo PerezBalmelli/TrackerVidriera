@@ -485,6 +485,7 @@ class MainWindow(QMainWindow):
         self.processing_thread.error_occurred.connect(self._handle_processing_error)
         self.processing_thread.finished.connect(self._on_thread_actually_finished)
         self.processing_thread.person_ids_detected.connect(self._handle_person_ids_detected)
+        self.processing_thread.detection_boxes_updated.connect(self._handle_detection_boxes_updated)
 
         self.processing_thread.start()
 
@@ -700,6 +701,18 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'auto_collapsed_due_to_resize'): # Check again before deleting
                 delattr(self, 'auto_collapsed_due_to_resize')
 
+
+    def _handle_detection_boxes_updated(self, boxes, frame_size):
+        """
+        Maneja la actualización de las cajas delimitadoras de detección.
+        
+        Args:
+            boxes: Objeto boxes de YOLO con información de las detecciones
+            frame_size: Tupla (ancho, alto) del frame original
+        """
+        if hasattr(self.video_display, 'update_detections_from_boxes'):
+            self.video_display.update_detections_from_boxes(boxes, frame_size)
+        
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
