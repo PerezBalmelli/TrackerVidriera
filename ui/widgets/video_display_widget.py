@@ -65,10 +65,11 @@ class VideoDisplayWidget(QWidget):
         self.persona_id_widget.ensure_visibility()
         
         # Usar un timer para asegurar visibilidad periódica durante el procesamiento
+        # pero con una frecuencia baja para no interrumpir la interacción del usuario
         from PyQt6.QtCore import QTimer
         self._visibility_timer = QTimer()
         self._visibility_timer.timeout.connect(self._ensure_panel_visibility)
-        self._visibility_timer.start(1000)  # Cada segundo
+        self._visibility_timer.start(15000)  # Reducido a cada 15 segundos para minimizar interrupciones
         
         # Agregar algunos IDs de prueba para verificar que funciona
         self.persona_id_widget.update_available_ids([1, 2, 3])
@@ -76,7 +77,7 @@ class VideoDisplayWidget(QWidget):
     def _ensure_panel_visibility(self):
         """Asegura periódicamente que el panel esté visible."""
         if self.persona_id_widget and self.persona_id_widget.isVisible():
-            self.persona_id_widget.ensure_visibility()
+            self.persona_id_widget.raise_()
         
     def _on_person_id_selected(self, person_id: int):
         """Maneja la selección de un ID de persona."""
