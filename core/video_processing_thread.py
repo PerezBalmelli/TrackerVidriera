@@ -31,7 +31,8 @@ class VideoProcessingThread(QThread):
     progress_update = pyqtSignal(int, int, str)
     processing_finished = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
-
+    person_ids_detected = pyqtSignal(list, int, bool)  # Lista de IDs detectados, ID rastreado, y bool indicando cambio auto
+    detection_boxes_updated = pyqtSignal(object, tuple)  # Boxes detectados y tamaño del frame
     def __init__(self, processing_params, person_tracker_ref, serial_widget_ref, parent=None):
         super().__init__(parent)
         self.params = processing_params
@@ -42,6 +43,17 @@ class VideoProcessingThread(QThread):
         self.cap_second = None
         self.out_main = None
         self.out_mobile = None
+
+    def set_target_person_id(self, target_id: int):
+        """
+        Establece el ID de la persona a rastrear.
+        
+        Args:
+            target_id (int): ID de la persona a seguir
+        """
+        if self.person_tracker and hasattr(self.person_tracker, 'set_target_person_id'):
+            self.person_tracker.set_target_person_id(target_id)
+            logger.info(f"ID objetivo establecido desde thread: {target_id}")
 
     def _get_youtube_stream_url_with_ytdlp(self, youtube_url):
         # Opciones para yt-dlp:
@@ -153,21 +165,27 @@ class VideoProcessingThread(QThread):
                     logger.error(f"Error al crear archivo principal en {self.params['output_path']}")
                     self.out_main = None
 
-            if self.params.get('save_mobile') and self.params.get('mobile_output_path') and self.cap_second and self.cap_second.isOpened():
+            if self.params.get('save_mobile') and self.params.get('mobile_output_path'):
                 mobile_output_dir = Path(self.params['mobile_output_path']).parent
                 mobile_output_dir.mkdir(parents=True, exist_ok=True)
                 mobile_fourcc = cv2.VideoWriter_fourcc(*self.params['mobile_codec'])
-                mobile_width = int(self.cap_second.get(cv2.CAP_PROP_FRAME_WIDTH))
-                mobile_height = int(self.cap_second.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                mobile_fps_cam = self.cap_second.get(cv2.CAP_PROP_FPS)
-                mobile_fps = mobile_fps_cam if mobile_fps_cam > 0 else main_fps
+                if self.cap_second and self.cap_second.isOpened():
+                    mobile_width = int(self.cap_second.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    mobile_height = int(self.cap_second.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    mobile_fps_cam = self.cap_second.get(cv2.CAP_PROP_FPS)
+                    mobile_fps = mobile_fps_cam if mobile_fps_cam > 0 else main_fps
+                else:
+                    #Para modo archivo/youtube: usa las dimensiones de video principal (el crop virtual se reescala a esto)
+                    mobile_width = main_width
+                    mobile_height = main_height
+                    mobile_fps = main_fps
                 if mobile_width > 0 and mobile_height > 0:
                     self.out_mobile = cv2.VideoWriter(str(self.params['mobile_output_path']), mobile_fourcc, mobile_fps, (mobile_width, mobile_height))
                     if not self.out_mobile.isOpened():
                         logger.error(f"Error al crear archivo móvil en {self.params['mobile_output_path']}")
                         self.out_mobile = None
                 else:
-                    logger.warning("Cámara móvil no tiene dimensiones válidas para guardar.")
+                    logger.warning("No se tienen dimensiones válidas para guardar salida móvil.")
                     self.out_mobile = None
 
             total_frames = -1 # Default para streams o cámaras
@@ -188,6 +206,7 @@ class VideoProcessingThread(QThread):
             self._release_resources()
             return -2
 
+    
     def run(self):
         self.running = True
         logger.info("Thread de procesamiento de video iniciado.")
@@ -246,16 +265,33 @@ class VideoProcessingThread(QThread):
                     self.progress_update.emit(frame_count, total_frames, progress_text)
 
                 annotated_frame_main = frame_main.copy()
+                boxes = None
                 try:
                     if self.person_tracker and hasattr(self.person_tracker, 'detectar_personas'):
                         result = self.person_tracker.detectar_personas(frame_main, self.params['confidence'])
                         if result and hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0:
                             boxes = result.boxes
                             ids_esta_frame = self.person_tracker.extraer_ids(boxes)
+                            
+                            # Actualizar ids_globales con los IDs detectados en este frame
+                            ids_globales.update(ids_esta_frame)
                             primer_id, rastreo_id, reiniciar_coords, frames_perdidos = self.person_tracker.actualizar_rastreo(
                                 primer_id, rastreo_id, ids_esta_frame, frames_perdidos, self.params['frames_espera']
                             )
                             if reiniciar_coords: ultima_coords = None
+                            
+                            # Obtener el ID que se está rastreando actualmente usando el método auxiliar
+                            current_tracking_id = self.person_tracker.get_current_tracking_id()
+                            
+                            # Preparar lista de IDs para el widget (solo los visibles en este frame)
+                            ids_para_widget = list(ids_esta_frame)
+                              # Emitir IDs para el widget de selección, con el indicador reiniciar_coords que muestra si hubo cambio de ID
+                            self.person_ids_detected.emit(ids_para_widget, current_tracking_id if current_tracking_id else -1, reiniciar_coords)
+                            
+                            # Emitir información de los boxes para la selección por clic
+                            frame_size = (frame_main.shape[1], frame_main.shape[0])  # (ancho, alto)
+                            self.detection_boxes_updated.emit(boxes, frame_size)
+                            
                             plot_frame = result.plot()
                             if plot_frame is not None and isinstance(plot_frame, np.ndarray):
                                 annotated_frame_main = plot_frame
@@ -263,10 +299,37 @@ class VideoProcessingThread(QThread):
                                 annotated_frame_main, boxes, rastreo_id, ultima_coords, ids_globales,
                                 frame_main.shape[1], controlar_servo=controlar_servo
                             )
+                        
+                        else:                            # No hay detecciones en este frame
+                            # Si estamos rastreando un ID, incluirlo en la lista para mantener la selección
+                            ids_para_widget = []
+                            # Obtener el ID que se está rastreando actualmente (aunque no sea visible)
+                            current_tracking_id = self.person_tracker.get_current_tracking_id()
+                            # Emitir una lista vacía de IDs visibles, pero incluir el ID de rastreo actual
+                            self.person_ids_detected.emit(ids_para_widget, current_tracking_id if current_tracking_id else -1, False)
                     else:
                         logger.warning("Person tracker no está disponible. Saltando detección/tracking.")
                 except Exception as e_track:
                     logger.error(f"Error durante detección/tracking: {e_track}", exc_info=True)
+
+                    # --- ZOOM VIRTUAL: activar en modos archivo o youtube
+                is_virtual_mobile = (not self.params['is_camera'])  # True en archivo o YouTube
+                if is_virtual_mobile:
+                    # Calcula el zoom virtual solo si hay boxes y un id a seguir
+                    zoom_frame = None
+                    if boxes is not None and rastreo_id is not None:
+                        zoom_frame = obtener_crop_zoom(frame_main, boxes, rastreo_id, zoom_factor=2.0)
+                    # Si no hay persona, opcional: mostrar None o el frame completo
+                    second_frame_for_display = zoom_frame if zoom_frame is not None else None
+                    second_frame_for_saving = zoom_frame if zoom_frame is not None else None
+                else:
+                    # MANTENER LOGICA PARA CAMARA FISICA (DOS CAMARAS)
+                    if self.cap_second and self.cap_second.isOpened():
+                        ret_second, temp_second_frame = self.cap_second.read()
+                        if ret_second:
+                            second_frame_for_display = temp_second_frame.copy()
+                            if self.out_mobile and self.params.get('save_mobile'):
+                                second_frame_for_saving = temp_second_frame
 
                 self.processed_frame.emit(annotated_frame_main, second_frame_for_display)
 
@@ -325,3 +388,30 @@ class VideoProcessingThread(QThread):
     def stop(self):
         logger.info("Solicitando detención del thread de procesamiento de video...")
         self.running = False
+
+def obtener_crop_zoom(frame, boxes, rastreo_id, zoom_factor=2.0):
+    """
+    Recorta y amplía la zona donde se encuentra la persona rastreada (rastreo_id).
+    Retorna el frame zoomed (al tamaño original) o None si ID no se detecta.
+    """
+    if boxes is not None and boxes.id is not None and boxes.xyxy is not None:
+        for i, id_tensor in enumerate(boxes.id):
+            id_ = int(id_tensor.item())
+            if id_ == rastreo_id and i < len(boxes.xyxy):
+                x1, y1, x2, y2 = map(int, boxes.xyxy[i].tolist())
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                w = x2 - x1
+                h = y2 - y1
+                crop_w = int(w * zoom_factor)
+                crop_h = int(h * zoom_factor)
+                x_start = max(0, cx - crop_w // 2)
+                x_end = min(frame.shape[1], cx + crop_w // 2)
+                y_start = max(0, cy - crop_h // 2)
+                y_end = min(frame.shape[0], cy + crop_h // 2)
+                crop = frame[y_start:y_end, x_start:x_end]
+                crop_resized = cv2.resize(
+                    crop, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR
+                )
+                return crop_resized
+    return None        

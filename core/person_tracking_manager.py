@@ -2,12 +2,15 @@
 Módulo principal de rastreo de personas.
 Integración de todas las clases y componentes para facilitar el uso.
 """
+import logging
 from .tracking.model_manager import ModelManager
 from .tracking.person_detector import PersonDetector
 from .tracking.object_tracker import ObjectTracker
 from .tracking.video_processor import VideoProcessor
 from .visualization.annotation import FrameAnnotator
 from .hardware.servo_controller import ServoController
+
+logger = logging.getLogger(__name__)
 
 
 class PersonTrackingManager:
@@ -69,7 +72,6 @@ class PersonTrackingManager:
             for id_tensor in ids:
                 ids_esta_frame.add(int(id_tensor.item()))
         return ids_esta_frame
-        
     def actualizar_rastreo(self, primer_id, rastreo_id, ids_esta_frame, frames_perdidos, frames_espera=None):
         """
         Actualiza el estado de rastreo.
@@ -87,15 +89,52 @@ class PersonTrackingManager:
         if frames_espera is not None:
             self.tracker.set_frames_espera(frames_espera)
             
-        # Configurar estado del tracker
-        self.tracker.primer_id = primer_id
-        self.tracker.rastreo_id = rastreo_id
-        self.tracker.frames_perdidos = frames_perdidos
+        # Solo configurar estado del tracker si no está ya establecido (preservar selección manual)
+        if self.tracker.primer_id is None:
+            self.tracker.primer_id = primer_id
+        if self.tracker.rastreo_id is None:
+            self.tracker.rastreo_id = rastreo_id
+        # Solo actualizar frames_perdidos si no hay un ID establecido manualmente
+        # o si el ID manual está presente en el frame actual
+        if self.tracker.rastreo_id is None or self.tracker.rastreo_id in ids_esta_frame:
+            self.tracker.frames_perdidos = frames_perdidos
         
         # Actualizar rastreo
         primer_id, rastreo_id, reiniciar_coords, frames_perdidos = self.tracker.actualizar(ids_esta_frame)
-        
         return primer_id, rastreo_id, reiniciar_coords, frames_perdidos
+    def set_target_person_id(self, target_id: int):
+        """
+        Establece un ID específico para rastrear.
+        
+        Args:
+            target_id (int): ID de la persona a rastrear
+        """
+        if target_id is not None:
+            self.tracker.rastreo_id = target_id
+            self.tracker.frames_perdidos = 0  # Reiniciar contador
+            self.tracker.manual_selection = True  # Marcar como selección manual
+            if self.tracker.primer_id is None:
+                self.tracker.primer_id = target_id
+            logger.info(f"ID de seguimiento establecido manualmente: {target_id}")
+            print(f"Usuario seleccionó ID {target_id} para rastreo manual")
+        
+    def get_current_tracking_id(self):
+        """
+        Obtiene el ID actualmente siendo rastreado.
+        
+        Returns:
+            int o None: ID actual o None si no hay seguimiento activo
+        """
+        return self.tracker.get_tracked_id()
+        
+    def get_all_detected_ids(self):
+        """
+        Obtiene todos los IDs detectados globalmente.
+        
+        Returns:
+            set: Conjunto de todos los IDs detectados
+        """
+        return self.tracker.get_all_ids()
         
     def dibujar_anotaciones(self, frame, boxes, rastreo_id, ultima_coords, ids_globales, frame_width, controlar_servo=False):
         return self.frame_annotator.annotate_frame(

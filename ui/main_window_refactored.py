@@ -163,10 +163,12 @@ class MainWindow(QMainWindow):
         self.action_buttons.process_clicked.connect(self.start_processing_video)
         self.action_buttons.stop_clicked.connect(self.stop_processing_video)
         self.action_buttons.save_config_clicked.connect(self.save_settings_from_ui)
-
         self.video_display.display_error.connect(
             lambda msg: self.show_status_message(f"Error de Visualización: {msg}", 5000)
         )
+        
+        # Conectar señal de selección de ID de persona
+        self.video_display.person_id_selected.connect(self._handle_person_id_selection)
 
     def _update_ui_for_processing_state(self):
         # index: 0 for File, 1 for Camera, 2 for YouTube
@@ -475,14 +477,15 @@ class MainWindow(QMainWindow):
         self.input_widget.detener_segunda_previsualizacion()
 
         self.video_display.display_frame(None)
-        self.video_display.display_second_frame(None)
-
+        self.video_display.display_second_frame(None)        
         self.processing_thread = VideoProcessingThread(params, self.person_tracker, self.serial_widget, self)
         self.processing_thread.processed_frame.connect(self._update_video_displays)
         self.processing_thread.progress_update.connect(self._update_progress_status)
         self.processing_thread.processing_finished.connect(self._handle_processing_finished)
         self.processing_thread.error_occurred.connect(self._handle_processing_error)
         self.processing_thread.finished.connect(self._on_thread_actually_finished)
+        self.processing_thread.person_ids_detected.connect(self._handle_person_ids_detected)
+        self.processing_thread.detection_boxes_updated.connect(self._handle_detection_boxes_updated)
 
         self.processing_thread.start()
 
@@ -505,8 +508,44 @@ class MainWindow(QMainWindow):
 
     def _handle_processing_error(self, error_message):
         self.show_status_message(f"Error en procesamiento: {error_message}", 7000)
-        logger.error(f"Thread de procesamiento reportó error: {error_message}")
+        logger.error(f"Thread de procesamiento reportó error: {error_message}")    
+    def _handle_person_ids_detected(self, ids_list, current_tracking_id, auto_change=False):
+        """
+        Maneja la detección de IDs de personas y actualiza el panel de selección.
+        
+        Args:
+            ids_list (list): Lista de IDs detectados en el frame actual
+            current_tracking_id (int): ID actualmente siendo rastreado (-1 si no hay)
+            auto_change (bool): Indica si hubo un cambio automático de ID
+        """
+        # Añadir print para depuración
+        print(f"HANDLE_PERSON_IDS_DETECTED: ids_list={ids_list}, current_tracking_id={current_tracking_id}, auto_change={auto_change}")
+        
+        # Actualizar los IDs disponibles en el panel de selección
+        tracking_id = current_tracking_id if current_tracking_id != -1 else None
+        self.video_display.update_available_person_ids(ids_list, tracking_id, auto_change)
+        
+        # Si no hay selección manual y hay un ID siendo rastreado, mostrarlo como seleccionado
+        if current_tracking_id != -1:
+            selected_id = self.video_display.get_selected_person_id()
+            if selected_id is None or selected_id != current_tracking_id:
+                # Solo actualizar si no hay selección manual o es diferente
+                pass  # El widget ya manejará la visualización del ID activo
 
+    def _handle_person_id_selection(self, selected_id):
+        """
+        Maneja la selección manual de un ID de persona por parte del usuario.
+        
+        Args:
+            selected_id (int): ID de la persona seleccionada por el usuario
+        """
+        if self.processing_thread and self.processing_thread.isRunning():
+            # Enviar el ID seleccionado al thread de procesamiento
+            self.processing_thread.set_target_person_id(selected_id)
+            self.show_status_message(f"Rastreando persona ID: {selected_id}", 3000)
+            logger.info(f"Usuario seleccionó persona ID: {selected_id} para rastreo")
+        else:
+            self.show_status_message("No hay procesamiento activo para establecer objetivo de rastreo", 3000)
 
     def _on_thread_actually_finished(self):
         logger.info("QThread 'finished' signal received (procesamiento terminado o detenido).")
@@ -520,8 +559,6 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(200, lambda: self.input_widget.test_camera_info() if self.input_widget.get_selected_camera_id() is not None else None)
                 if self.input_widget.get_selected_second_camera_id() is not None:
                     QTimer.singleShot(400, lambda: self.input_widget.test_second_camera_info() if self.input_widget.get_selected_second_camera_id() is not None else None)
-
-
     def stop_processing_video(self):
         if self.processing_thread and self.processing_thread.isRunning():
             logger.info("Enviando señal de detención al thread de procesamiento...")
@@ -536,7 +573,7 @@ class MainWindow(QMainWindow):
         else:
             self.show_status_message("No hay procesamiento en curso para detener.", 3000)
 
-
+        # Expandir panel automáticamente después de detener si fue colapsado automáticamente
         is_collapsed_by_setting = getattr(settings, 'config_panel_collapsed', False)
         is_auto_collapsed_by_resize = hasattr(self, 'auto_collapsed_due_to_resize') and self.auto_collapsed_due_to_resize
 
@@ -664,6 +701,18 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'auto_collapsed_due_to_resize'): # Check again before deleting
                 delattr(self, 'auto_collapsed_due_to_resize')
 
+
+    def _handle_detection_boxes_updated(self, boxes, frame_size):
+        """
+        Maneja la actualización de las cajas delimitadoras de detección.
+        
+        Args:
+            boxes: Objeto boxes de YOLO con información de las detecciones
+            frame_size: Tupla (ancho, alto) del frame original
+        """
+        if hasattr(self.video_display, 'update_detections_from_boxes'):
+            self.video_display.update_detections_from_boxes(boxes, frame_size)
+        
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
