@@ -1,5 +1,5 @@
 """
-Módulo principal para la interfaz de usuario de TrackerVidriera.
+Módulo principal para la interfaz de usuario de HumanTracker.
 Implementa la ventana principal y todos los controles de la aplicación.
 """
 import sys
@@ -58,12 +58,12 @@ except ImportError:
 
 
 class MainWindow(QMainWindow):
-    """Ventana principal de la aplicación TrackerVidriera."""
+    """Ventana principal de la aplicación HumanTracker."""
 
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("TrackerVidriera")
+        self.setWindowTitle("HumanTracker")
         self.setMinimumSize(800, 600)
 
         self.procesando_flag = False
@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central_widget)
 
         header_layout = QHBoxLayout()
-        title_label = QLabel("TrackerVidriera")
+        title_label = QLabel("HumanTracker")
         title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         header_layout.addWidget(title_label)
         header_layout.addStretch()
@@ -670,7 +670,7 @@ class MainWindow(QMainWindow):
 
 
     def closeEvent(self, event):
-        logger.info("Cerrando la aplicación TrackerVidriera.")
+        logger.info("Cerrando la aplicación HumanTracker.")
         if hasattr(self, 'input_widget'):
             self.input_widget.detener_previsualizacion()
             self.input_widget.detener_segunda_previsualizacion()

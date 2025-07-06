@@ -16,7 +16,7 @@ def main():
     """Función principal que inicia la aplicación."""
     # Crear la aplicación Qt
     app = QApplication(sys.argv)
-    app.setApplicationName("TrackerVidriera")
+    app.setApplicationName("HumanTracker")
     
     # Establecer la hoja de estilo para toda la aplicación
     app.setStyleSheet("""
